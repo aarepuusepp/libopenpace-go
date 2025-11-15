@@ -137,18 +137,21 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 			pwRefs := []byte{0x02, 0x03}
 			if aidInfo.name == "eMRTD" {
 				// For eMRTD, try MRZ first, then CAN
-				pwRefs = []byte{0x01, 0x02, 0x03}
+			pwRefs = []byte{0xFF, 0x01, 0x02, 0x03} // 0xFF = omit tag 83
+		}
+		
+		for _, pwRef := range pwRefs {
+			pwRefName := "CAN"
+			if pwRef == 0x01 {
+				pwRefName = "MRZ"
+			} else if pwRef == 0xFF {
+				pwRefName = "OMIT (policy-derived)"
 			}
+			fmt.Printf("[PACE] Trying MSE:Set AT with PWRef=0x%02X (%s)\n", pwRef, pwRefName)
 			
-			for _, pwRef := range pwRefs {
-				pwRefName := "CAN"
-				if pwRef == 0x01 {
-					pwRefName = "MRZ"
-				}
-				fmt.Printf("[PACE] Trying MSE:Set AT with PWRef=0x%02X (%s)\n", pwRef, pwRefName)
-				
-				// Some cards require VERIFY CAN before MSE:Set AT
-				// Try VERIFY command with the CAN
+			// Some cards require VERIFY CAN before MSE:Set AT
+			// Skip VERIFY for omit-83 mode (0xFF)
+			if pwRef != 0xFF {
 				fmt.Printf("[PACE] Trying VERIFY CAN...\n")
 				verifyCmd := []byte{0x00, 0x20, 0x00, pwRef, byte(len(secret.Value))}
 				verifyCmd = append(verifyCmd, secret.Value...)
@@ -161,18 +164,19 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 						fmt.Printf("[PACE] VERIFY CAN returned SW=%04X (may not be required)\n", sw)
 					}
 				}
-				
-				// Step 0c: MSE:Set AT (plain, no SM)
-				err = mseSetATPACE(card, paceInfo.oidDER, pwRef, paceInfo.paramID)
-				if err != nil {
-					fmt.Printf("[PACE] MSE:Set AT failed: %v\n", err)
-					continue
-				}
-				
-				fmt.Printf("[PACE] MSE:Set AT succeeded! Proceeding with PACE...\n")
-				paceSuccess = true
-				break
 			}
+			
+			// Step 0c: MSE:Set AT (plain, no SM)
+			err = mseSetATPACE(card, paceInfo.oidDER, pwRef, paceInfo.paramID)
+			if err != nil {
+				fmt.Printf("[PACE] MSE:Set AT failed: %v\n", err)
+				continue
+			}
+			
+			fmt.Printf("[PACE] MSE:Set AT succeeded! Proceeding with PACE...\n")
+			paceSuccess = true
+			break
+		}
 			
 			if paceSuccess {
 				break
@@ -299,6 +303,12 @@ func selectApplication(card CardInterface, aid []byte) error {
 		return fmt.Errorf("SELECT AID failed: SW=%04X", sw)
 	}
 	
+	// Log FCI (File Control Information) if present
+	if len(resp) > 2 {
+		fci := resp[:len(resp)-2]
+		fmt.Printf("[PACE] FCI from SELECT AID: %d bytes: %X\n", len(fci), fci)
+	}
+	
 	return nil
 }
 
@@ -361,12 +371,17 @@ func parseCardAccessPACEInfos(cardAccess []byte) []paceInfo {
 func mseSetATPACE(card CardInterface, oidDER []byte, pwRef byte, paramID byte) error {
 	// Build MSE:Set AT data with three TLVs:
 	// Tag 80: OID (algorithm) - DER encoded
-	// Tag 83: Password Reference
+	// Tag 83: Password Reference (optional - some AIDs derive from policy)
 	// Tag 84: Parameter ID
 	
 	data := []byte{0x80, byte(len(oidDER))}
 	data = append(data, oidDER...)
-	data = append(data, 0x83, 0x01, pwRef)
+	
+	// Include PWRef if not 0xFF (0xFF = omit tag 83)
+	if pwRef != 0xFF {
+		data = append(data, 0x83, 0x01, pwRef)
+	}
+	
 	data = append(data, 0x84, 0x01, paramID)
 	
 	fmt.Printf("[PACE] MSE:Set AT data: %X\n", data)
