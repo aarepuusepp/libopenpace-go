@@ -38,63 +38,143 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 		return nil, fmt.Errorf("failed to setup domain parameters: %w", err)
 	}
 	
-	// Step 0a: Read EF.CardAccess (FID=011C)
-	// Note: For NFC, we can't select applications before PACE (returns 6982)
-	// So we skip application selection and go straight to PACE
-	fmt.Printf("[PACE] Reading EF.CardAccess...\n")
-	selectCmd := []byte{0x00, 0xA4, 0x02, 0x0C, 0x02, 0x01, 0x1C}
-	resp, err2 := card.Transmit(selectCmd)
+	// Step 0a: Select MF first, then try to read EF.CardAccess
+	fmt.Printf("[PACE] Selecting MF...\n")
+	selectMF := []byte{0x00, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00}
+	resp, err2 := card.Transmit(selectMF)
 	if err2 == nil && len(resp) >= 2 {
 		sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
 		if sw == 0x9000 {
-			// Read the file
+			fmt.Printf("[PACE] MF selected\n")
+		}
+	}
+	
+	// Now try to read EF.CardAccess from MF
+	fmt.Printf("[PACE] Reading EF.CardAccess from MF...\n")
+	selectCmd := []byte{0x00, 0xA4, 0x02, 0x0C, 0x02, 0x01, 0x1C}
+	resp, err2 = card.Transmit(selectCmd)
+	var mfCardAccess []byte
+	if err2 == nil && len(resp) >= 2 {
+		sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+		if sw == 0x9000 {
 			readCmd := []byte{0x00, 0xB0, 0x00, 0x00, 0x00}
 			resp, err2 = card.Transmit(readCmd)
 			if err2 == nil && len(resp) > 2 {
-				cardAccessData := resp[:len(resp)-2]
-				fmt.Printf("[PACE] EF.CardAccess read: %d bytes: %X\n", len(cardAccessData), cardAccessData)
-				
-				// Parse CardAccess to get actual OID and parameter ID
-				// Format: 31 <len> 30 <len> 06 <oidlen> <oid> 02 01 <pwtype> 02 01 <paramid>
-				if len(cardAccessData) >= 22 && cardAccessData[0] == 0x31 && cardAccessData[2] == 0x30 {
-					// Find OID (tag 0x06)
-					if cardAccessData[4] == 0x06 {
-						oidLen := int(cardAccessData[5])
-						if len(cardAccessData) >= 6+oidLen+6 {
-							actualOID := cardAccessData[6 : 6+oidLen]
-							// Find parameter ID (second INTEGER after OID)
-							pwTypePos := 6 + oidLen
-							if cardAccessData[pwTypePos] == 0x02 && cardAccessData[pwTypePos+1] == 0x01 {
-								pwType := cardAccessData[pwTypePos+2]
-								paramIDPos := pwTypePos + 3
-								if cardAccessData[paramIDPos] == 0x02 && cardAccessData[paramIDPos+1] == 0x01 {
-									actualParamID := cardAccessData[paramIDPos+2]
-									fmt.Printf("[PACE] CardAccess parsed: OID=%X, PwType=%d, ParamID=%d\n", actualOID, pwType, actualParamID)
-									
-									// Override protocol and parameterID with actual values from card
-									// Build OID string from bytes
-									if len(actualOID) == 10 && actualOID[0] == 0x04 && actualOID[1] == 0x00 && actualOID[2] == 0x7F {
-										// This is a BSI TR-03110 PACE OID
-										// Use the actual values from the card
-										ctx.ParameterID = int(actualParamID)
-										// Store the actual OID bytes (with DER encoding) for MSE:Set AT
-										ctx.CardAccessOID = append([]byte{0x06, byte(len(actualOID))}, actualOID...)
-										fmt.Printf("[PACE] Using card's OID and ParamID from CardAccess\n")
-									}
-								}
-							}
-						}
-					}
-				}
+				mfCardAccess = resp[:len(resp)-2]
+				fmt.Printf("[PACE] EF.CardAccess from MF: %d bytes: %X\n", len(mfCardAccess), mfCardAccess)
 			}
 		}
 	}
 	
-	// Step 0b: MSE:Set AT (Manage Security Environment)
-	// Use the parameter ID from context (may have been updated from CardAccess)
-	err = mseSetAT(card, protocol, ctx.ParameterID, ctx)
-	if err != nil {
-		return nil, fmt.Errorf("MSE:Set AT failed: %w", err)
+	// Step 0b: Probe AIDs and try PACE with each
+	// Try multiple AIDs in order
+	aids := []struct {
+		name string
+		aid  []byte
+	}{
+		{"EstEID (contactless)", []byte{0xA0, 0x00, 0x00, 0x00, 0x77, 0x01, 0x08, 0x00, 0x07, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x01, 0x00}},
+		{"PKCS-15", []byte{0xA0, 0x00, 0x00, 0x00, 0x63, 0x50, 0x4B, 0x43, 0x53, 0x2D, 0x31, 0x35}},
+		{"eMRTD", []byte{0xA0, 0x00, 0x00, 0x02, 0x47, 0x10, 0x01}},
+		{"No AID (MF)", nil}, // Try without selecting any AID
+	}
+	
+	var paceSuccess bool
+	for _, aidInfo := range aids {
+		fmt.Printf("[PACE] Trying context: %s\n", aidInfo.name)
+		
+		// SELECT AID if specified (plain, no SM)
+		if aidInfo.aid != nil {
+			err = selectApplication(card, aidInfo.aid)
+			if err != nil {
+				fmt.Printf("[PACE] SELECT AID failed: %v, trying next...\n", err)
+				continue
+			}
+			fmt.Printf("[PACE] AID selected: %s\n", aidInfo.name)
+			
+			// Try to read EF.CardAccess from this application
+			fmt.Printf("[PACE] Reading EF.CardAccess for this AID...\n")
+			selectCmd := []byte{0x00, 0xA4, 0x02, 0x0C, 0x02, 0x01, 0x1C}
+			resp, err2 := card.Transmit(selectCmd)
+			if err2 == nil && len(resp) >= 2 {
+				sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+				if sw == 0x9000 {
+					readCmd := []byte{0x00, 0xB0, 0x00, 0x00, 0x00}
+					resp, err2 = card.Transmit(readCmd)
+					if err2 == nil && len(resp) > 2 {
+						mfCardAccess = resp[:len(resp)-2]
+						fmt.Printf("[PACE] EF.CardAccess from AID: %d bytes: %X\n", len(mfCardAccess), mfCardAccess)
+					}
+				}
+			}
+		}
+		
+		// Use CardAccess (either from MF or from this AID)
+		cardAccessData := mfCardAccess
+		if len(cardAccessData) == 0 {
+			fmt.Printf("[PACE] No CardAccess available, trying next...\n")
+			continue
+		}
+		
+		fmt.Printf("[PACE] Using CardAccess: %d bytes\n", len(cardAccessData))
+		
+		// Parse CardAccess to get PACEInfo(s)
+		paceInfos := parseCardAccessPACEInfos(cardAccessData)
+		if len(paceInfos) == 0 {
+			fmt.Printf("[PACE] No PACEInfo found in CardAccess, trying next AID...\n")
+			continue
+		}
+		
+		// Try each PACEInfo with both password references (0x02 and 0x03)
+		for i, paceInfo := range paceInfos {
+			fmt.Printf("[PACE] Trying PACEInfo %d: OID=%X, ParamID=%d\n", i+1, paceInfo.oidDER, paceInfo.paramID)
+			
+			// Update context with this PACEInfo
+			ctx.CardAccessOID = paceInfo.oidDER
+			ctx.ParameterID = int(paceInfo.paramID)
+			
+			// Try both password references
+			for _, pwRef := range []byte{0x02, 0x03} {
+				fmt.Printf("[PACE] Trying MSE:Set AT with PWRef=0x%02X\n", pwRef)
+				
+				// Some cards require VERIFY CAN before MSE:Set AT
+				// Try VERIFY command with the CAN
+				fmt.Printf("[PACE] Trying VERIFY CAN...\n")
+				verifyCmd := []byte{0x00, 0x20, 0x00, pwRef, byte(len(secret.Value))}
+				verifyCmd = append(verifyCmd, secret.Value...)
+				resp, err3 := card.Transmit(verifyCmd)
+				if err3 == nil && len(resp) >= 2 {
+					sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+					if sw == 0x9000 {
+						fmt.Printf("[PACE] VERIFY CAN succeeded\n")
+					} else {
+						fmt.Printf("[PACE] VERIFY CAN returned SW=%04X (may not be required)\n", sw)
+					}
+				}
+				
+				// Step 0c: MSE:Set AT (plain, no SM)
+				err = mseSetATPACE(card, paceInfo.oidDER, pwRef, paceInfo.paramID)
+				if err != nil {
+					fmt.Printf("[PACE] MSE:Set AT failed: %v\n", err)
+					continue
+				}
+				
+				fmt.Printf("[PACE] MSE:Set AT succeeded! Proceeding with PACE...\n")
+				paceSuccess = true
+				break
+			}
+			
+			if paceSuccess {
+				break
+			}
+		}
+		
+		if paceSuccess {
+			break
+		}
+	}
+	
+	if !paceSuccess {
+		return nil, fmt.Errorf("all AIDs and PACEInfos failed - card may require vendor-specific initialization")
 	}
 	
 	// Step 1: Encrypt nonce and send to card
@@ -206,6 +286,98 @@ func selectApplication(card CardInterface, aid []byte) error {
 	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
 	if sw != 0x9000 {
 		return fmt.Errorf("SELECT AID failed: SW=%04X", sw)
+	}
+	
+	return nil
+}
+
+// paceInfo holds parsed PACE information from EF.CardAccess
+type paceInfo struct {
+	oidDER  []byte // DER-encoded OID (including 06 <len> prefix)
+	pwType  byte   // Password type from CardAccess
+	paramID byte   // Parameter ID
+}
+
+// parseCardAccessPACEInfos parses EF.CardAccess and extracts all PACEInfo structures
+func parseCardAccessPACEInfos(cardAccess []byte) []paceInfo {
+	var infos []paceInfo
+	
+	// Format: 31 <len> 30 <len> 06 <oidlen> <oid> 02 01 <pwtype> 02 01 <paramid>
+	if len(cardAccess) < 22 || cardAccess[0] != 0x31 {
+		return infos
+	}
+	
+	// For now, parse single PACEInfo (most cards have one)
+	// TODO: Support multiple PACEInfos in SET
+	if cardAccess[2] != 0x30 || cardAccess[4] != 0x06 {
+		return infos
+	}
+	
+	oidLen := int(cardAccess[5])
+	if len(cardAccess) < 6+oidLen+6 {
+		return infos
+	}
+	
+	actualOID := cardAccess[6 : 6+oidLen]
+	pwTypePos := 6 + oidLen
+	
+	if cardAccess[pwTypePos] != 0x02 || cardAccess[pwTypePos+1] != 0x01 {
+		return infos
+	}
+	
+	pwType := cardAccess[pwTypePos+2]
+	paramIDPos := pwTypePos + 3
+	
+	if cardAccess[paramIDPos] != 0x02 || cardAccess[paramIDPos+1] != 0x01 {
+		return infos
+	}
+	
+	paramID := cardAccess[paramIDPos+2]
+	
+	// Build DER-encoded OID (06 <len> <oid>)
+	oidDER := append([]byte{0x06, byte(len(actualOID))}, actualOID...)
+	
+	infos = append(infos, paceInfo{
+		oidDER:  oidDER,
+		pwType:  pwType,
+		paramID: paramID,
+	})
+	
+	return infos
+}
+
+// mseSetATPACE sends MSE:Set AT command with explicit OID, PWRef, and ParamID
+func mseSetATPACE(card CardInterface, oidDER []byte, pwRef byte, paramID byte) error {
+	// Build MSE:Set AT data with three TLVs:
+	// Tag 80: OID (algorithm) - DER encoded
+	// Tag 83: Password Reference
+	// Tag 84: Parameter ID
+	
+	data := []byte{0x80, byte(len(oidDER))}
+	data = append(data, oidDER...)
+	data = append(data, 0x83, 0x01, pwRef)
+	data = append(data, 0x84, 0x01, paramID)
+	
+	fmt.Printf("[PACE] MSE:Set AT data: %X\n", data)
+	
+	// MSE:Set AT command (plain, CLA=00)
+	cmd := []byte{0x00, 0x22, 0xC1, 0xA4, byte(len(data))}
+	cmd = append(cmd, data...)
+	
+	fmt.Printf("[PACE] MSE:Set AT command: %X\n", cmd)
+	
+	resp, err := card.Transmit(cmd)
+	if err != nil {
+		return fmt.Errorf("MSE:Set AT transmission failed: %w", err)
+	}
+	
+	if len(resp) < 2 {
+		return fmt.Errorf("MSE:Set AT response too short")
+	}
+	
+	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+	if sw != 0x9000 {
+		return fmt.Errorf("MSE:Set AT failed: SW=%04X", sw)
 	}
 	
 	return nil
