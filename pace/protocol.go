@@ -38,8 +38,9 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 		return nil, fmt.Errorf("failed to setup domain parameters: %w", err)
 	}
 	
-	// Step 0a: Read EF.CardAccess (FID=011C) to activate PACE
-	// This tells the card we want to use PACE
+	// Step 0a: Read EF.CardAccess (FID=011C)
+	// Note: For NFC, we can't select applications before PACE (returns 6982)
+	// So we skip application selection and go straight to PACE
 	fmt.Printf("[PACE] Reading EF.CardAccess...\n")
 	selectCmd := []byte{0x00, 0xA4, 0x02, 0x0C, 0x02, 0x01, 0x1C}
 	resp, err2 := card.Transmit(selectCmd)
@@ -50,13 +51,48 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 			readCmd := []byte{0x00, 0xB0, 0x00, 0x00, 0x00}
 			resp, err2 = card.Transmit(readCmd)
 			if err2 == nil && len(resp) > 2 {
-				fmt.Printf("[PACE] EF.CardAccess read: %d bytes\n", len(resp)-2)
+				cardAccessData := resp[:len(resp)-2]
+				fmt.Printf("[PACE] EF.CardAccess read: %d bytes: %X\n", len(cardAccessData), cardAccessData)
+				
+				// Parse CardAccess to get actual OID and parameter ID
+				// Format: 31 <len> 30 <len> 06 <oidlen> <oid> 02 01 <pwtype> 02 01 <paramid>
+				if len(cardAccessData) >= 22 && cardAccessData[0] == 0x31 && cardAccessData[2] == 0x30 {
+					// Find OID (tag 0x06)
+					if cardAccessData[4] == 0x06 {
+						oidLen := int(cardAccessData[5])
+						if len(cardAccessData) >= 6+oidLen+6 {
+							actualOID := cardAccessData[6 : 6+oidLen]
+							// Find parameter ID (second INTEGER after OID)
+							pwTypePos := 6 + oidLen
+							if cardAccessData[pwTypePos] == 0x02 && cardAccessData[pwTypePos+1] == 0x01 {
+								pwType := cardAccessData[pwTypePos+2]
+								paramIDPos := pwTypePos + 3
+								if cardAccessData[paramIDPos] == 0x02 && cardAccessData[paramIDPos+1] == 0x01 {
+									actualParamID := cardAccessData[paramIDPos+2]
+									fmt.Printf("[PACE] CardAccess parsed: OID=%X, PwType=%d, ParamID=%d\n", actualOID, pwType, actualParamID)
+									
+									// Override protocol and parameterID with actual values from card
+									// Build OID string from bytes
+									if len(actualOID) == 10 && actualOID[0] == 0x04 && actualOID[1] == 0x00 && actualOID[2] == 0x7F {
+										// This is a BSI TR-03110 PACE OID
+										// Use the actual values from the card
+										ctx.ParameterID = int(actualParamID)
+										// Store the actual OID bytes (with DER encoding) for MSE:Set AT
+										ctx.CardAccessOID = append([]byte{0x06, byte(len(actualOID))}, actualOID...)
+										fmt.Printf("[PACE] Using card's OID and ParamID from CardAccess\n")
+									}
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}
 	
 	// Step 0b: MSE:Set AT (Manage Security Environment)
-	err = mseSetAT(card, protocol, parameterID)
+	// Use the parameter ID from context (may have been updated from CardAccess)
+	err = mseSetAT(card, protocol, ctx.ParameterID, ctx)
 	if err != nil {
 		return nil, fmt.Errorf("MSE:Set AT failed: %w", err)
 	}
@@ -152,10 +188,10 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 
 // selectApplication selects an application by AID.
 //
-// Command: 00 A4 04 0C <AID> (P2=0C for contactless)
+// Command: 00 A4 04 00 <AID> (plain SELECT, no P2=0C for PACE context)
 func selectApplication(card CardInterface, aid []byte) error {
-	// For contactless cards, use P2=0C (first or only occurrence)
-	cmd := []byte{0x00, 0xA4, 0x04, 0x0C, byte(len(aid))}
+	// Use P2=00 for plain SELECT (not P2=0C which is for file selection)
+	cmd := []byte{0x00, 0xA4, 0x04, 0x00, byte(len(aid))}
 	cmd = append(cmd, aid...)
 	
 	resp, err := card.Transmit(cmd)
@@ -179,27 +215,44 @@ func selectApplication(card CardInterface, aid []byte) error {
 //
 // Command: 00 22 C1 A4 <data>
 // Data: TLV with OID and parameter ID
-func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int) error {
+func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int, ctx *PACEContext) error {
 	// Build MSE:Set AT data
 	// Tag 80: OID
 	// Tag 84: Parameter ID (optional)
 	
-	oidSlice := protocol.ToOIDSlice()
-	oidBytes, err := asn1.Marshal(asn1.ObjectIdentifier(oidSlice))
-	if err != nil {
-		return fmt.Errorf("failed to marshal OID: %w", err)
+	var oidBytes []byte
+	if len(ctx.CardAccessOID) > 0 {
+		// Use OID from CardAccess (already DER encoded)
+		oidBytes = ctx.CardAccessOID
+		fmt.Printf("[PACE] MSE:Set AT - Using OID from CardAccess: %X\n", oidBytes)
+	} else {
+		// Fallback to protocol OID
+		oidSlice := protocol.ToOIDSlice()
+		var err error
+		oidBytes, err = asn1.Marshal(asn1.ObjectIdentifier(oidSlice))
+		if err != nil {
+			return fmt.Errorf("failed to marshal OID: %w", err)
+		}
+		fmt.Printf("[PACE] MSE:Set AT - OID: %v, OID bytes: %X\n", oidSlice, oidBytes)
 	}
 	
-	fmt.Printf("[PACE] MSE:Set AT - OID: %v, OID bytes: %X\n", oidSlice, oidBytes)
+	// Build MSE:Set AT data with three TLVs:
+	// Tag 80: OID (algorithm)
+	// Tag 83: Password Reference (0x03 for CAN, 0x02 as fallback)
+	// Tag 84: Parameter ID
 	
 	data := []byte{0x80, byte(len(oidBytes))}
 	data = append(data, oidBytes...)
+	
+	// Tag 83: Password Reference for CAN
+	// Try 0x02 for CAN (some Thales/CosmoX cards use 0x02 instead of 0x03)
+	data = append(data, 0x83, 0x01, 0x02)
 	
 	if parameterID > 0 {
 		data = append(data, 0x84, 0x01, byte(parameterID))
 	}
 	
-	fmt.Printf("[PACE] MSE:Set AT data: %X\n", data)
+	fmt.Printf("[PACE] MSE:Set AT data (with PW ref 0x02): %X\n", data)
 	
 	// MSE:Set AT command
 	cmd := []byte{0x00, 0x22, 0xC1, 0xA4, byte(len(data))}

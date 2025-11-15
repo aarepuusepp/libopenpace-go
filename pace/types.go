@@ -13,6 +13,7 @@ type PACEContext struct {
 	Protocol      ProtocolOID       // PACE protocol variant (ECDH/DH, GM/IM/CAM)
 	ParameterID   int               // Standardized domain parameter ID
 	DomainParams  *DomainParameters // Domain parameters (curve or DH group)
+	CardAccessOID []byte            // Actual OID bytes from EF.CardAccess (DER encoded)
 	
 	// Nonce (Step 1-2)
 	Nonce         []byte            // Decrypted nonce from card
