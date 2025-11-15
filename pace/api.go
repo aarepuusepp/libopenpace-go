@@ -2,7 +2,6 @@ package pace
 
 import (
 	"crypto/ecdh"
-	"crypto/sha256"
 	"fmt"
 	
 	"github.com/aarepuusepp/libopenpace-go/crypto"
@@ -134,12 +133,11 @@ func EstablishPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID,
 	// For now, we'll simulate verification
 	_ = authToken
 	
-	// Derive initial SSC (SSC0) from PACE session
-	// SSC0 is derived from shared secret and nonce using SHA-256
-	// This ensures both terminal and card start with the same SSC
-	initialSSC := deriveInitialSSC(ctx.SharedSecret, ctx.Nonce)
+	// Initialize SSC to zero (as per OpenPACE and BSI TR-03110)
+	// SSC is incremented before each command/response
+	initialSSC := make([]byte, 8) // All zeros
 	
-	// Create Secure Messaging context with proper initial SSC
+	// Create Secure Messaging context with zero initial SSC
 	smCtx, err := sm.NewContext(ctx.EncryptionKey, ctx.MACKey, initialSSC)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SM context: %w", err)
@@ -186,27 +184,6 @@ func setupDomainParameters(ctx *PACEContext, parameterID int) error {
 	}
 	
 	return nil
-}
-
-// deriveInitialSSC derives the initial Send Sequence Counter (SSC0) from PACE session.
-//
-// SSC0 is computed as the first 8 bytes of SHA-256(shared_secret || nonce).
-// This ensures both terminal and card start with the same SSC value.
-//
-// Parameters:
-//   - sharedSecret: Shared secret from PACE key agreement
-//   - nonce: Nonce from PACE protocol
-//
-// Returns the 8-byte initial SSC.
-func deriveInitialSSC(sharedSecret, nonce []byte) []byte {
-	// Compute SHA-256(shared_secret || nonce)
-	h := sha256.New()
-	h.Write(sharedSecret)
-	h.Write(nonce)
-	hash := h.Sum(nil)
-	
-	// Return first 8 bytes as SSC0
-	return hash[:8]
 }
 
 // generateSimulatedPeerKey generates a simulated peer public key for testing.

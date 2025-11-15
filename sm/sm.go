@@ -138,6 +138,10 @@ func (ctx *Context) WrapCommand(cla, ins, p1, p2 byte, data []byte, le int) ([]b
 	macInput = append(macInput, header...)
 	macInput = append(macInput, dataObjects...)
 
+	// Debug logging
+	fmt.Printf("[SM] WrapCommand: SSC=%X header=%X DOs_len=%d\n", ctx.SSC, header, len(dataObjects))
+	fmt.Printf("[SM] CMAC input: %X\n", macInput)
+
 	// Compute MAC (CMAC applies its own padding)
 	mac, err := crypto.CMAC(ctx.MACKey, macInput)
 	if err != nil {
@@ -247,6 +251,11 @@ func (ctx *Context) UnwrapResponse(response []byte) ([]byte, uint16, error) {
 	macInput = append(macInput, ctx.SSC...)
 	macInput = append(macInput, data[:len(data)-len(mac)-2]...) // Exclude DO8E (tag+len+val)
 
+	// Debug logging
+	fmt.Printf("[SM] UnwrapResponse: SSC=%X data_len=%d\n", ctx.SSC, len(data))
+	fmt.Printf("[SM] CMAC input: %X\n", macInput)
+	fmt.Printf("[SM] Received MAC: %X\n", mac)
+
 	// Compute expected MAC
 	expectedMAC, err := crypto.CMAC(ctx.MACKey, macInput)
 	if err != nil {
@@ -254,8 +263,9 @@ func (ctx *Context) UnwrapResponse(response []byte) ([]byte, uint16, error) {
 	}
 
 	// Compare MACs (constant-time)
+	fmt.Printf("[SM] Expected MAC: %X\n", expectedMAC[:8])
 	if len(mac) != 8 || !bytes.Equal(mac, expectedMAC[:8]) {
-		return nil, 0, fmt.Errorf("MAC verification failed")
+		return nil, 0, fmt.Errorf("MAC verification failed: got %X, expected %X", mac, expectedMAC[:8])
 	}
 
 	// Decrypt data (if present)

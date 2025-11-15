@@ -201,3 +201,24 @@ func (oid ProtocolOID) GetMappingType() MappingType {
 	}
 }
 
+// ToOIDSlice converts the OID string to a slice of integers for ASN.1 encoding.
+func (p ProtocolOID) ToOIDSlice() []int {
+	// Parse OID string like "0.4.0.127.0.7.2.2.4.2.2"
+	oidStr := string(p)
+	var result []int
+	current := 0
+	
+	for i := 0; i < len(oidStr); i++ {
+		if oidStr[i] == '.' {
+			result = append(result, current)
+			current = 0
+		} else if oidStr[i] >= '0' && oidStr[i] <= '9' {
+			current = current*10 + int(oidStr[i]-'0')
+		}
+	}
+	// Add last component
+	result = append(result, current)
+	
+	return result
+}
+
