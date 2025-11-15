@@ -199,17 +199,14 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 		return nil, fmt.Errorf("all AIDs and PACEInfos failed - card may require vendor-specific initialization")
 	}
 	
-	// Step 1: Encrypt nonce and send to card
-	encryptedNonce, err := PACE_STEP1_enc_nonce(ctx, secret)
-	if err != nil {
-		return nil, fmt.Errorf("PACE Step 1 failed: %w", err)
-	}
-	
-	// Send encrypted nonce to card via General Authenticate
-	cardEncryptedNonce, err := generalAuthenticateStep1(card, encryptedNonce)
+	// Step 1: Request encrypted nonce from card
+	// For PACE (GM/IM), GA Step 1 sends empty 7C template to request nonce from card
+	cardEncryptedNonce, err := generalAuthenticateStep1(card)
 	if err != nil {
 		return nil, fmt.Errorf("General Authenticate Step 1 failed: %w", err)
 	}
+	
+	fmt.Printf("[PACE] GA Step 1 - Received encrypted nonce from card: %d bytes: %X\n", len(cardEncryptedNonce), cardEncryptedNonce)
 	
 	// Step 2: Decrypt card's encrypted nonce
 	err = PACE_STEP2_dec_nonce(ctx, secret, cardEncryptedNonce)
@@ -488,28 +485,19 @@ func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int, ctx *PA
 //
 // Command: 00 86 00 00 <data> 00
 // Data: Tag 7C { Tag 80 <encrypted_nonce> }
-func generalAuthenticateStep1(card CardInterface, encryptedNonce []byte) ([]byte, error) {
-	// Build General Authenticate data
-	// Tag 7C: Dynamic Authentication Data
-	//   Tag 80: Encrypted Nonce
+func generalAuthenticateStep1(card CardInterface) ([]byte, error) {
+	// GA Step 1: Request encrypted nonce from card
+	// Send empty 7C template: 00 86 00 00 02 7C 00 00 (with Le=00)
+	// Card responds with: 7C <L> 80 <len> <Enc(Nonce)>
 	
-	data := []byte{0x7C}
-	innerData := []byte{0x80, byte(len(encryptedNonce))}
-	innerData = append(innerData, encryptedNonce...)
-	data = append(data, byte(len(innerData)))
-	data = append(data, innerData...)
+	cmd := []byte{0x00, 0x86, 0x00, 0x00, 0x02, 0x7C, 0x00, 0x00}
 	
-	// General Authenticate command
-	cmd := []byte{0x00, 0x86, 0x00, 0x00, byte(len(data))}
-	cmd = append(cmd, data...)
-	cmd = append(cmd, 0x00) // Le=0 (expect response)
-	
-	fmt.Printf("[PACE] GA Step 1 - Encrypted nonce length: %d bytes\n", len(encryptedNonce))
+	fmt.Printf("[PACE] GA Step 1 - Requesting encrypted nonce from card\n")
 	fmt.Printf("[PACE] GA Step 1 - Command: %X\n", cmd)
 	
-	resp, err2 := card.Transmit(cmd)
-	if err2 != nil {
-		return nil, fmt.Errorf("General Authenticate Step 1 transmission failed: %w", err2)
+	resp, err := card.Transmit(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("General Authenticate Step 1 transmission failed: %w", err)
 	}
 	
 	if len(resp) < 2 {
@@ -523,22 +511,38 @@ func generalAuthenticateStep1(card CardInterface, encryptedNonce []byte) ([]byte
 	
 	// Parse response: Tag 7C { Tag 80 <card_encrypted_nonce> }
 	respData := resp[:len(resp)-2]
+	fmt.Printf("[PACE] GA Step 1 - Response data: %X\n", respData)
+	
 	if len(respData) < 4 || respData[0] != 0x7C {
-		return nil, fmt.Errorf("invalid response format")
+		return nil, fmt.Errorf("invalid response format: expected 7C, got %X", respData)
 	}
 	
-	// Extract encrypted nonce from Tag 80
-	innerResp := respData[2:]
+	// Parse 7C length
+	var innerStart int
+	if respData[1] < 0x80 {
+		// Short form length
+		innerStart = 2
+	} else if respData[1] == 0x81 {
+		// Long form, 1 byte length
+		innerStart = 3
+	} else {
+		return nil, fmt.Errorf("unsupported length encoding: %X", respData[1])
+	}
+	
+	innerResp := respData[innerStart:]
 	if len(innerResp) < 2 || innerResp[0] != 0x80 {
-		return nil, fmt.Errorf("missing Tag 80 in response")
+		return nil, fmt.Errorf("missing Tag 80 in response, got: %X", innerResp)
 	}
 	
 	nonceLen := int(innerResp[1])
 	if len(innerResp) < 2+nonceLen {
-		return nil, fmt.Errorf("incomplete encrypted nonce")
+		return nil, fmt.Errorf("encrypted nonce data too short: expected %d, got %d", nonceLen, len(innerResp)-2)
 	}
 	
-	return innerResp[2 : 2+nonceLen], nil
+	encryptedNonce := innerResp[2 : 2+nonceLen]
+	fmt.Printf("[PACE] GA Step 1 - Encrypted nonce: %d bytes: %X\n", len(encryptedNonce), encryptedNonce)
+	
+	return encryptedNonce, nil
 }
 
 // generalAuthenticateStep2 exchanges mapping data (for Generic Mapping only).
