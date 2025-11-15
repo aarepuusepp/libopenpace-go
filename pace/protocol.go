@@ -132,6 +132,13 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 			ctx.CardAccessOID = paceInfo.oidDER
 			ctx.ParameterID = int(paceInfo.paramID)
 			
+			// Re-setup domain parameters with the correct ParamID from CardAccess
+			err = setupDomainParameters(ctx, int(paceInfo.paramID))
+			if err != nil {
+				fmt.Printf("[PACE] Failed to setup domain parameters for ParamID=%d: %v\n", paceInfo.paramID, err)
+				continue
+			}
+			
 			// Try multiple password references
 			// 0x01 = MRZ (for eMRTD), 0x02 = CAN, 0x03 = CAN (alternate)
 			pwRefs := []byte{0x02, 0x03}
@@ -355,8 +362,10 @@ func parseCardAccessPACEInfos(cardAccess []byte) []paceInfo {
 	
 	paramID := cardAccess[paramIDPos+2]
 	
-	// Build DER-encoded OID (06 <len> <oid>)
-	oidDER := append([]byte{0x06, byte(len(actualOID))}, actualOID...)
+	// For MSE:Set AT, some cards want just the OID bytes (no 06 <len> prefix)
+	// Others want the full DER encoding. We'll store just the OID bytes
+	// and let mseSetATPACE decide based on card behavior.
+	oidDER := actualOID // Just the OID bytes, no DER wrapper
 	
 	infos = append(infos, paceInfo{
 		oidDER:  oidDER,
@@ -494,6 +503,9 @@ func generalAuthenticateStep1(card CardInterface, encryptedNonce []byte) ([]byte
 	cmd := []byte{0x00, 0x86, 0x00, 0x00, byte(len(data))}
 	cmd = append(cmd, data...)
 	cmd = append(cmd, 0x00) // Le=0 (expect response)
+	
+	fmt.Printf("[PACE] GA Step 1 - Encrypted nonce length: %d bytes\n", len(encryptedNonce))
+	fmt.Printf("[PACE] GA Step 1 - Command: %X\n", cmd)
 	
 	resp, err2 := card.Transmit(cmd)
 	if err2 != nil {

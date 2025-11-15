@@ -29,13 +29,15 @@ func brainpoolP256r1() EC { return gndbp.P256r1() }
 // ChooseCurve picks the EC domain from ParamID (from EF.CardAccess PACEInfo)
 func ChooseCurve(paramID byte) (EC, error) {
 	switch paramID {
-	case 0x08: // NIST P-256
+	case 0x08: // NIST P-256 (secp256r1)
 		return nistP256(), nil
-	case 0x09: // NIST P-384
+	case 0x09: // NIST P-384 (secp384r1)
 		return nistP384(), nil
-	case 0x0A: // NIST P-521
+	case 0x0A: // NIST P-521 (secp521r1)
 		return nistP521(), nil
-	case 0x10: // brainpoolP256r1
+	case 0x0C: // brainpoolP256r1 (older spec / Idemia cards)
+		return brainpoolP256r1(), nil
+	case 0x10: // brainpoolP256r1 (newer spec / Thales cards)
 		return brainpoolP256r1(), nil
 	default:
 		return nil, errors.New("unsupported PACE ParamID")

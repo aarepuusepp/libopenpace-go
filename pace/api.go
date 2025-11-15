@@ -157,17 +157,25 @@ func setupDomainParameters(ctx *PACEContext, parameterID int) error {
 		switch parameterID {
 		case 8: // NIST P-256
 			curve = ecdh.P256()
-		case 10: // NIST P-384
+		case 9: // NIST P-384
 			curve = ecdh.P384()
-		case 12: // NIST P-521
+		case 10: // NIST P-521
 			curve = ecdh.P521()
-		case 16: // brainpoolP256r1 (RFC 5639)
+		case 12: // brainpoolP256r1 (Idemia cards, older spec)
 			// brainpool curves use elliptic.Curve, not ecdh.Curve
 			ctx.DomainParams = &DomainParameters{
 				Type:          DomainTypeEC,
 				EllipticCurve: brainpool.P256r1(),
 			}
-			fmt.Printf("[PACE] Using brainpoolP256r1 curve (ParamID=16)\n")
+			fmt.Printf("[PACE] Using brainpoolP256r1 curve (ParamID=12, Idemia)\n")
+			return nil
+		case 16: // brainpoolP256r1 (Thales cards, newer spec)
+			// brainpool curves use elliptic.Curve, not ecdh.Curve
+			ctx.DomainParams = &DomainParameters{
+				Type:          DomainTypeEC,
+				EllipticCurve: brainpool.P256r1(),
+			}
+			fmt.Printf("[PACE] Using brainpoolP256r1 curve (ParamID=16, Thales)\n")
 			return nil
 		default:
 			return fmt.Errorf("unsupported EC parameter ID: %d", parameterID)
