@@ -160,6 +160,12 @@ func setupDomainParameters(ctx *PACEContext, parameterID int) error {
 			curve = ecdh.P384()
 		case 12: // NIST P-521
 			curve = ecdh.P521()
+		case 16: // brainpoolP256r1
+			// Note: crypto/ecdh doesn't support brainpool curves directly
+			// We'll use P-256 as a temporary workaround
+			// TODO: Implement proper brainpool support
+			curve = ecdh.P256()
+			fmt.Printf("[PACE] Warning: Using P-256 as temporary substitute for brainpoolP256r1 (ParamID=16)\n")
 		default:
 			return fmt.Errorf("unsupported EC parameter ID: %d", parameterID)
 		}

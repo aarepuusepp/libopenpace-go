@@ -132,9 +132,20 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 			ctx.CardAccessOID = paceInfo.oidDER
 			ctx.ParameterID = int(paceInfo.paramID)
 			
-			// Try both password references
-			for _, pwRef := range []byte{0x02, 0x03} {
-				fmt.Printf("[PACE] Trying MSE:Set AT with PWRef=0x%02X\n", pwRef)
+			// Try multiple password references
+			// 0x01 = MRZ (for eMRTD), 0x02 = CAN, 0x03 = CAN (alternate)
+			pwRefs := []byte{0x02, 0x03}
+			if aidInfo.name == "eMRTD" {
+				// For eMRTD, try MRZ first, then CAN
+				pwRefs = []byte{0x01, 0x02, 0x03}
+			}
+			
+			for _, pwRef := range pwRefs {
+				pwRefName := "CAN"
+				if pwRef == 0x01 {
+					pwRefName = "MRZ"
+				}
+				fmt.Printf("[PACE] Trying MSE:Set AT with PWRef=0x%02X (%s)\n", pwRef, pwRefName)
 				
 				// Some cards require VERIFY CAN before MSE:Set AT
 				// Try VERIFY command with the CAN
