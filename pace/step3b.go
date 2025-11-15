@@ -48,7 +48,13 @@ func generateEphemeralKeyECDH(ctx *PACEContext) ([]byte, error) {
 		return nil, fmt.Errorf("mapped generator required")
 	}
 	
-	// Generate ephemeral keypair
+	// Check if we're using brainpool (elliptic.Curve) or standard (ecdh.Curve)
+	if ctx.DomainParams.EllipticCurve != nil {
+		// Brainpool curve - use elliptic package
+		return generateEphemeralKeyElliptic(ctx)
+	}
+	
+	// Generate ephemeral keypair using ecdh.Curve
 	curve := ctx.DomainParams.Curve
 	privateKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
@@ -63,6 +69,29 @@ func generateEphemeralKeyECDH(ctx *PACEContext) ([]byte, error) {
 	
 	// Return public key bytes
 	return publicKey.Bytes(), nil
+}
+
+// generateEphemeralKeyElliptic generates an ephemeral key for brainpool curves.
+func generateEphemeralKeyElliptic(ctx *PACEContext) ([]byte, error) {
+	curve := ctx.DomainParams.EllipticCurve
+	
+	// Generate random private key
+	privateKey, x, y, err := crypto.GenerateEllipticKey(curve)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate ephemeral key: %w", err)
+	}
+	
+	// Build uncompressed public key: 04 || X || Y
+	publicKeyBytes := []byte{0x04}
+	publicKeyBytes = append(publicKeyBytes, x.Bytes()...)
+	publicKeyBytes = append(publicKeyBytes, y.Bytes()...)
+	
+	// Store keys in context
+	ctx.EphemeralPrivateKey = privateKey
+	ctx.EphemeralPublicKey = publicKeyBytes
+	
+	// Return public key bytes (uncompressed format: 04 || X || Y)
+	return publicKeyBytes, nil
 }
 
 // generateEphemeralKeyDH generates an ephemeral DH keypair.

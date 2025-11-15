@@ -2,6 +2,7 @@ package pace
 
 import (
 	"crypto/ecdh"
+	"crypto/elliptic"
 	"math/big"
 )
 
@@ -98,8 +99,9 @@ type DomainParameters struct {
 	Type DomainType // EC or DH
 	
 	// For EC (Elliptic Curve)
-	Curve      ecdh.Curve // Standard curve (P-256, P-384, P-521, etc.)
-	CurveName  string     // Curve name for custom curves
+	Curve         ecdh.Curve       // Standard curve (P-256, P-384, P-521, etc.) from crypto/ecdh
+	EllipticCurve elliptic.Curve   // Brainpool curves from elliptic package
+	CurveName     string           // Curve name for custom curves
 	
 	// For DH (Diffie-Hellman)
 	P *big.Int // Prime modulus

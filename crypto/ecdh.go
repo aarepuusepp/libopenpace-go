@@ -2,8 +2,10 @@ package crypto
 
 import (
 	"crypto/ecdh"
+	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
+	"math/big"
 )
 
 // ECDHGenerateKey generates a new ECDH keypair for the specified curve.
@@ -89,5 +91,26 @@ func GetCurveByName(name string) (ecdh.Curve, error) {
 	default:
 		return nil, fmt.Errorf("unsupported curve: %s", name)
 	}
+}
+
+// GenerateEllipticKey generates a keypair for an elliptic curve (brainpool, etc.).
+// Returns private key scalar and public key coordinates (x, y).
+func GenerateEllipticKey(curve elliptic.Curve) ([]byte, *big.Int, *big.Int, error) {
+	// Generate random private key
+	privateKey, x, y, err := elliptic.GenerateKey(curve, rand.Reader)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to generate key: %w", err)
+	}
+	
+	return privateKey, x, y, nil
+}
+
+// ComputeEllipticSharedSecret computes ECDH shared secret for elliptic curves.
+func ComputeEllipticSharedSecret(curve elliptic.Curve, privateKey []byte, peerX, peerY *big.Int) ([]byte, error) {
+	// Compute shared secret: privateKey * peerPublicKey
+	x, _ := curve.ScalarMult(peerX, peerY, privateKey)
+	
+	// Return x-coordinate as shared secret
+	return x.Bytes(), nil
 }
 
