@@ -487,17 +487,49 @@ func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int, ctx *PA
 // Data: Tag 7C { Tag 80 <encrypted_nonce> }
 func generalAuthenticateStep1(card CardInterface) ([]byte, error) {
 	// GA Step 1: Request encrypted nonce from card
-	// Send empty 7C template: 00 86 00 00 02 7C 00 00 (with Le=00)
-	// Card responds with: 7C <L> 80 <len> <Enc(Nonce)>
+	// Try multiple variants to accommodate different card implementations
 	
-	cmd := []byte{0x00, 0x86, 0x00, 0x00, 0x02, 0x7C, 0x00, 0x00}
+	variants := []struct {
+		name string
+		cmd  []byte
+	}{
+		{"7C 02 80 00 (explicit DO80)", []byte{0x00, 0x86, 0x00, 0x00, 0x04, 0x7C, 0x02, 0x80, 0x00}},
+		{"7C 00 (empty template)", []byte{0x00, 0x86, 0x00, 0x00, 0x02, 0x7C, 0x00}},
+		{"No data (empty GA1)", []byte{0x00, 0x86, 0x00, 0x00, 0x00}},
+		{"7C 04 80 02 00 00 (rare variant)", []byte{0x00, 0x86, 0x00, 0x00, 0x06, 0x7C, 0x04, 0x80, 0x02, 0x00, 0x00}},
+	}
 	
-	fmt.Printf("[PACE] GA Step 1 - Requesting encrypted nonce from card\n")
-	fmt.Printf("[PACE] GA Step 1 - Command: %X\n", cmd)
+	var lastErr error
+	var resp []byte
 	
-	resp, err := card.Transmit(cmd)
-	if err != nil {
-		return nil, fmt.Errorf("General Authenticate Step 1 transmission failed: %w", err)
+	for i, variant := range variants {
+		fmt.Printf("[PACE] GA Step 1 - Variant %d: %s\n", i+1, variant.name)
+		fmt.Printf("[PACE] GA Step 1 - Command: %X\n", variant.cmd)
+		
+		resp, lastErr = card.Transmit(variant.cmd)
+		if lastErr != nil {
+			fmt.Printf("[PACE] GA Step 1 - Transmission failed: %v\n", lastErr)
+			continue
+		}
+		
+		if len(resp) < 2 {
+			fmt.Printf("[PACE] GA Step 1 - Response too short\n")
+			continue
+		}
+		
+		sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+		fmt.Printf("[PACE] GA Step 1 - SW=%04X\n", sw)
+		
+		if sw == 0x9000 {
+			fmt.Printf("[PACE] GA Step 1 - SUCCESS with variant: %s\n", variant.name)
+			break
+		}
+		
+		lastErr = fmt.Errorf("SW=%04X", sw)
+	}
+	
+	if lastErr != nil {
+		return nil, fmt.Errorf("General Authenticate Step 1 failed (all variants): %w", lastErr)
 	}
 	
 	if len(resp) < 2 {
