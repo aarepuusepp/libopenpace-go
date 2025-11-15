@@ -9,8 +9,9 @@ import (
 func TestNewContext(t *testing.T) {
 	encKey := make([]byte, 16)
 	macKey := make([]byte, 16)
+	ssc := make([]byte, 8)
 	
-	ctx, err := NewContext(encKey, macKey)
+	ctx, err := NewContext(encKey, macKey, ssc)
 	if err != nil {
 		t.Fatalf("NewContext failed: %v", err)
 	}
@@ -33,8 +34,9 @@ func TestNewContext(t *testing.T) {
 func TestNewContext_InvalidKeys(t *testing.T) {
 	encKey := make([]byte, 16)
 	macKey := make([]byte, 24) // Different length
+	ssc := make([]byte, 8)
 	
-	_, err := NewContext(encKey, macKey)
+	_, err := NewContext(encKey, macKey, ssc)
 	if err == nil {
 		t.Error("NewContext should fail with different key lengths")
 	}
@@ -87,8 +89,9 @@ func TestIncrementSSC(t *testing.T) {
 func TestWrapCommand_NoData(t *testing.T) {
 	encKey := make([]byte, 16)
 	macKey := make([]byte, 16)
+	ssc := make([]byte, 8)
 	
-	ctx, err := NewContext(encKey, macKey)
+	ctx, err := NewContext(encKey, macKey, ssc)
 	if err != nil {
 		t.Fatalf("NewContext failed: %v", err)
 	}
@@ -118,8 +121,9 @@ func TestWrapCommand_NoData(t *testing.T) {
 func TestWrapCommand_WithData(t *testing.T) {
 	encKey := make([]byte, 16)
 	macKey := make([]byte, 16)
+	ssc := make([]byte, 8)
 	
-	ctx, err := NewContext(encKey, macKey)
+	ctx, err := NewContext(encKey, macKey, ssc)
 	if err != nil {
 		t.Fatalf("NewContext failed: %v", err)
 	}
@@ -145,8 +149,9 @@ func TestWrapCommand_WithData(t *testing.T) {
 func TestWrapCommand_WithLe(t *testing.T) {
 	encKey := make([]byte, 16)
 	macKey := make([]byte, 16)
+	ssc := make([]byte, 8)
 	
-	ctx, err := NewContext(encKey, macKey)
+	ctx, err := NewContext(encKey, macKey, ssc)
 	if err != nil {
 		t.Fatalf("NewContext failed: %v", err)
 	}
@@ -173,7 +178,8 @@ func TestWrapUnwrap_Roundtrip(t *testing.T) {
 		macKey[i] = byte(i + 16)
 	}
 	
-	ctx, err := NewContext(encKey, macKey)
+	ssc := make([]byte, 8)
+	ctx, err := NewContext(encKey, macKey, ssc)
 	if err != nil {
 		t.Fatalf("NewContext failed: %v", err)
 	}
@@ -198,8 +204,9 @@ func TestWrapUnwrap_Roundtrip(t *testing.T) {
 func TestSSC_Increment_Multiple(t *testing.T) {
 	encKey := make([]byte, 16)
 	macKey := make([]byte, 16)
+	ssc := make([]byte, 8)
 	
-	ctx, err := NewContext(encKey, macKey)
+	ctx, err := NewContext(encKey, macKey, ssc)
 	if err != nil {
 		t.Fatalf("NewContext failed: %v", err)
 	}
@@ -283,7 +290,8 @@ func hexDecode(s string) []byte {
 func BenchmarkWrapCommand(b *testing.B) {
 	encKey := make([]byte, 16)
 	macKey := make([]byte, 16)
-	ctx, _ := NewContext(encKey, macKey)
+	ssc := make([]byte, 8)
+	ctx, _ := NewContext(encKey, macKey, ssc)
 	data := make([]byte, 100)
 	
 	b.ResetTimer()
