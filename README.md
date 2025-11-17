@@ -1,5 +1,7 @@
 # libopenpace-go
 
+**Version 1.0.0**
+
 Pure Go implementation of the PACE (Password Authenticated Connection Establishment) protocol for Estonian ID card NFC reading.
 
 Based on the OpenPACE C library specification that is available at https://github.com/frankmorgner/openpace.
@@ -25,7 +27,11 @@ Based on the OpenPACE C library specification that is available at https://githu
 ## Installation
 
 ```bash
-go get github.com/aarepuusepp/libopenpace-go
+# Latest version
+go get github.com/aarepuusepp/libopenpace-go@v1.0.0
+
+# Or use in go.mod
+require github.com/aarepuusepp/libopenpace-go v1.0.0
 ```
 
 ## Usage
@@ -87,6 +93,12 @@ The library includes:
 - Working examples
 
 **Note**: This is a simplified implementation suitable for demonstration and development. Some features (like Generic Mapping with real card interaction) require additional work for production use.
+
+## Version History
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed version history and release notes.
+
+Current stable version: **1.0.0**
 
 ## License
 
