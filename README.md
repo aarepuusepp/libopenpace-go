@@ -2,6 +2,8 @@
 
 Pure Go implementation of the PACE (Password Authenticated Connection Establishment) protocol for Estonian ID card NFC reading.
 
+Based on the OpenPACE C library specification that is available at https://github.com/frankmorgner/openpace.
+
 ## Overview
 
 `libopenpace-go` is a native Go implementation of the OpenPACE protocol, providing PACE and Secure Messaging functionality without CGO dependencies. This library enables secure communication with smart cards via NFC readers, specifically targeting Estonian ID cards.

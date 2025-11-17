@@ -160,7 +160,7 @@ These limitations are documented and don't prevent the library from being useful
 
 ## Integration Path
 
-The library is ready for integration into `eid-helper`:
+The library is ready for integration into `eid-pd-reader`:
 
 1. Import `github.com/aarepuusepp/libopenpace-go/pace`
 2. Replace CGO OpenPACE calls with pure Go implementation
@@ -208,7 +208,7 @@ All success criteria from the original plan have been met:
 
 ## Conclusion
 
-The libopenpace-go library has been successfully implemented according to the plan. It provides a solid foundation for PACE protocol support in pure Go, eliminating the need for CGO and the OpenPACE C library. The implementation is well-tested, well-documented, and ready for integration into the eid-helper application.
+The libopenpace-go library has been successfully implemented according to the plan. It provides a solid foundation for PACE protocol support in pure Go, eliminating the need for CGO and the OpenPACE C library. The implementation is well-tested, well-documented, and ready for integration into the eid-pd-reader application.
 
 **Status**: ✅ **COMPLETE**
 
