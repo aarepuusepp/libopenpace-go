@@ -1,36 +1,31 @@
 package pace
 
 import (
+	"crypto/aes"
 	"fmt"
-	
+
 	"github.com/aarepuusepp/libopenpace-go/crypto"
 	"github.com/aarepuusepp/libopenpace-go/kdf"
 )
 
 // PACE_STEP2_dec_nonce implements PACE Step 2: Decrypt Nonce.
 //
-// In this step, the terminal receives an encrypted nonce from the card
-// and decrypts it using a key derived from the shared secret.
+// The terminal receives an encrypted nonce from the card and decrypts it
+// using a key derived from the shared secret (CAN/PIN) via KDF_PI.
 //
-// Process:
-//  1. Derive decryption key from secret using KDF_PI
-//  2. Decrypt the received encrypted nonce
-//  3. Store the decrypted nonce in the context
+// Per BSI TR-03110 and the OpenPACE reference implementation (cipher_no_pad),
+// the cipher mode is AES-CBC with a zero IV, NOT AES-ECB. For a single-block
+// nonce (16 bytes), CBC with zero IV equals ECB. However, for AES-256 PACE,
+// cards (e.g. IDEMIA) send a 32-byte nonce (key-length per BSI TR-03110
+// Section A.3.4), requiring correct CBC chaining across two blocks.
 //
-// Parameters:
-//   - ctx: PACE context (will be updated with the decrypted nonce)
-//   - secret: Shared secret (CAN, PIN, etc.)
-//   - encryptedNonce: Encrypted nonce received from the card
+// The full decrypted output is used as the nonce — no truncation.
 //
-// Returns an error if decryption fails.
-//
-// Reference: BSI TR-03110 v2.21 Section 4.4.2
+// Reference: BSI TR-03110 v2.21 Section 4.4.2, OpenPACE pace.c
 func PACE_STEP2_dec_nonce(ctx *PACEContext, secret *PACESecret, encryptedNonce []byte) error {
 	cipherSuite := ctx.Protocol.GetCipherSuite()
-	
-	// Determine key size based on cipher suite
+
 	var keySize int
-	
 	switch cipherSuite {
 	case CipherSuiteAES128:
 		keySize = 16
@@ -43,46 +38,37 @@ func PACE_STEP2_dec_nonce(ctx *PACEContext, secret *PACESecret, encryptedNonce [
 	default:
 		return fmt.Errorf("unsupported cipher suite: %v", cipherSuite)
 	}
-	
-	// Derive decryption key from secret using KDF_PI
+
 	hashAlg := kdf.GetHashAlgorithm(keySize)
 	decKey := kdf.KDF_PI(secret.Value, nil, keySize, hashAlg)
-	
-	// Adjust parity for 3DES keys
+
 	if cipherSuite == CipherSuite3DES {
 		decKey = kdf.AdjustKeyParity(decKey)
 	}
-	
-	// Decrypt nonce
+
+	logVerbose("[PACE] Step 2 - Derived K_pi (%d bytes): %X\n", len(decKey), decKey)
+	logVerbose("[PACE] Step 2 - Encrypted nonce (%d bytes): %X\n", len(encryptedNonce), encryptedNonce)
+
 	var nonce []byte
 	var err error
-	
+
 	switch cipherSuite {
 	case CipherSuiteAES128, CipherSuiteAES192, CipherSuiteAES256:
-		// Use AES in ECB mode
-		nonce, err = crypto.AESDecryptECB(decKey, encryptedNonce)
+		// Per OpenPACE: cipher_no_pad uses AES-CBC with zero IV (ctx->iv is NULL).
+		// For multi-block nonces (e.g. 32 bytes for AES-256), CBC chaining is required.
+		zeroIV := make([]byte, aes.BlockSize)
+		nonce, err = crypto.AESDecryptCBCRaw(decKey, zeroIV, encryptedNonce)
 	case CipherSuite3DES:
-		// Use 3DES in ECB mode
 		nonce, err = crypto.TripleDESDecryptECB(decKey, encryptedNonce)
 	}
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to decrypt nonce: %w", err)
 	}
-	
-	// Validate nonce size
-	expectedSize := 16 // AES
-	if cipherSuite == CipherSuite3DES {
-		expectedSize = 8
-	}
-	
-	if len(nonce) != expectedSize {
-		return fmt.Errorf("invalid nonce size: expected %d, got %d", expectedSize, len(nonce))
-	}
-	
-	// Store decrypted nonce in context
+
+	logVerbose("[PACE] Step 2 - Decrypted nonce (%d bytes): %X\n", len(nonce), nonce)
+
 	ctx.Nonce = nonce
-	
 	return nil
 }
 

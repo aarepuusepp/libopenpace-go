@@ -6,6 +6,18 @@ import (
 	"testing"
 )
 
+func TestSetVerbose(t *testing.T) {
+	SetVerbose(true)
+	if !verboseMode {
+		t.Error("SetVerbose(true) did not enable verbose mode")
+	}
+
+	SetVerbose(false)
+	if verboseMode {
+		t.Error("SetVerbose(false) did not disable verbose mode")
+	}
+}
+
 func TestNewContext(t *testing.T) {
 	encKey := make([]byte, 16)
 	macKey := make([]byte, 16)
@@ -20,12 +32,12 @@ func TestNewContext(t *testing.T) {
 		t.Fatal("Context is nil")
 	}
 	
-	if len(ctx.SSC) != 8 {
-		t.Errorf("SSC length = %d, expected 8", len(ctx.SSC))
+	if len(ctx.SSC) != 16 {
+		t.Errorf("SSC length = %d, expected 16 (AES block size)", len(ctx.SSC))
 	}
 	
-	// SSC should be initialized to zero
-	expectedSSC := make([]byte, 8)
+	// SSC should be initialized to zero (16 bytes for AES-128)
+	expectedSSC := make([]byte, 16)
 	if !bytes.Equal(ctx.SSC, expectedSSC) {
 		t.Errorf("SSC = %x, expected %x", ctx.SSC, expectedSSC)
 	}
@@ -216,8 +228,9 @@ func TestSSC_Increment_Multiple(t *testing.T) {
 		ctx.IncrementSSC()
 	}
 	
-	// SSC should be 10
-	expected := []byte{0, 0, 0, 0, 0, 0, 0, 10}
+	// SSC should be 10 (16 bytes for AES-128)
+	expected := make([]byte, 16)
+	expected[15] = 10
 	if !bytes.Equal(ctx.SSC, expected) {
 		t.Errorf("SSC after 10 increments = %x, expected %x", ctx.SSC, expected)
 	}

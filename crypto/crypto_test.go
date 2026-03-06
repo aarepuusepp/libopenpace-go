@@ -122,6 +122,140 @@ func TestISO9797Method2Padding(t *testing.T) {
 	}
 }
 
+func TestAESEncryptDecryptCBCRaw(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	iv := make([]byte, 16)
+	plaintext := []byte("0123456789abcdef") // exactly 1 block, no padding needed
+
+	ciphertext, err := AESEncryptCBCRaw(key, iv, plaintext)
+	if err != nil {
+		t.Fatalf("AESEncryptCBCRaw failed: %v", err)
+	}
+
+	if bytes.Equal(ciphertext, plaintext) {
+		t.Error("ciphertext should differ from plaintext")
+	}
+
+	decrypted, err := AESDecryptCBCRaw(key, iv, ciphertext)
+	if err != nil {
+		t.Fatalf("AESDecryptCBCRaw failed: %v", err)
+	}
+
+	if !bytes.Equal(plaintext, decrypted) {
+		t.Errorf("roundtrip failed: got %x, want %x", decrypted, plaintext)
+	}
+}
+
+func TestAESEncryptDecryptCBCRaw_MultiBlock(t *testing.T) {
+	key := make([]byte, 32) // AES-256
+	for i := range key {
+		key[i] = byte(i)
+	}
+	iv := make([]byte, 16)
+	plaintext := make([]byte, 32) // 2 blocks
+	for i := range plaintext {
+		plaintext[i] = byte(i + 0x10)
+	}
+
+	ciphertext, err := AESEncryptCBCRaw(key, iv, plaintext)
+	if err != nil {
+		t.Fatalf("AESEncryptCBCRaw failed: %v", err)
+	}
+
+	decrypted, err := AESDecryptCBCRaw(key, iv, ciphertext)
+	if err != nil {
+		t.Fatalf("AESDecryptCBCRaw failed: %v", err)
+	}
+
+	if !bytes.Equal(plaintext, decrypted) {
+		t.Errorf("multi-block roundtrip failed: got %x, want %x", decrypted, plaintext)
+	}
+}
+
+func TestAESDecryptECBRaw(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	plaintext := []byte("0123456789abcdef") // exactly 1 block
+
+	ciphertext, err := AESEncryptECB(key, plaintext)
+	if err != nil {
+		t.Fatalf("AESEncryptECB failed: %v", err)
+	}
+
+	// AESDecryptECBRaw should return the original data without unpadding
+	decrypted, err := AESDecryptECBRaw(key, ciphertext[:16])
+	if err != nil {
+		t.Fatalf("AESDecryptECBRaw failed: %v", err)
+	}
+
+	if !bytes.Equal(plaintext, decrypted) {
+		t.Errorf("AESDecryptECBRaw got %x, want %x", decrypted, plaintext)
+	}
+}
+
+func TestAESEncryptECBBlock(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	block := make([]byte, 16)
+	for i := range block {
+		block[i] = byte(i)
+	}
+
+	encrypted, err := AESEncryptECBBlock(key, block)
+	if err != nil {
+		t.Fatalf("AESEncryptECBBlock failed: %v", err)
+	}
+
+	if len(encrypted) != 16 {
+		t.Errorf("AESEncryptECBBlock output length = %d, expected 16", len(encrypted))
+	}
+
+	if bytes.Equal(encrypted, block) {
+		t.Error("encrypted block should differ from input")
+	}
+
+	// Verify via ECBRaw decrypt
+	decrypted, err := AESDecryptECBRaw(key, encrypted)
+	if err != nil {
+		t.Fatalf("AESDecryptECBRaw failed: %v", err)
+	}
+
+	if !bytes.Equal(decrypted, block) {
+		t.Errorf("roundtrip mismatch: got %x, want %x", decrypted, block)
+	}
+}
+
+func TestAESEncryptECBBlock_WrongSize(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	shortBlock := []byte{0x01, 0x02, 0x03}
+
+	_, err := AESEncryptECBBlock(key, shortBlock)
+	if err == nil {
+		t.Error("AESEncryptECBBlock should reject non-block-size input")
+	}
+}
+
+func TestAESCBCRaw_InvalidInput(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	iv := make([]byte, 16)
+
+	// Non-block-aligned plaintext
+	_, err := AESEncryptCBCRaw(key, iv, []byte("short"))
+	if err == nil {
+		t.Error("AESEncryptCBCRaw should reject non-block-aligned plaintext")
+	}
+
+	// Wrong IV size
+	_, err = AESEncryptCBCRaw(key, []byte("short"), make([]byte, 16))
+	if err == nil {
+		t.Error("AESEncryptCBCRaw should reject wrong IV size")
+	}
+
+	// Non-block-aligned ciphertext
+	_, err = AESDecryptCBCRaw(key, iv, []byte("short"))
+	if err == nil {
+		t.Error("AESDecryptCBCRaw should reject non-block-aligned ciphertext")
+	}
+}
+
 // Test CMAC
 func TestCMAC_AES(t *testing.T) {
 	// Test vector from NIST SP 800-38B

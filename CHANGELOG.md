@@ -5,6 +5,37 @@ All notable changes to libopenpace-go will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-03-05
+
+### Changed
+
+- Upgraded to Go 1.26.0
+- Updated all dependencies to latest versions
+
+### Added
+
+- **Generic Mapping (GM-ECDH)**: Full implementation with ephemeral mapping keypair exchange and mapped generator computation (G' = s*G + H)
+- **Brainpool curve support**: brainpoolP256r1, brainpoolP320r1, brainpoolP384r1, brainpoolP512r1 via `go.gnd.pw/crypto/brainpool`
+- **Raw AES functions**: `AESEncryptCBCRaw`, `AESDecryptCBCRaw`, `AESEncryptECBBlock`, `AESDecryptECBRaw` for SM and PACE operations that require no padding
+- **Verbose debug logging**: `pace.SetVerbose()` and `sm.SetVerbose()` for opt-in protocol tracing (disabled by default)
+- **Correct BSI TR-03110 auth token format**: TLV-encoded `7F49{06 <OID> 86 <peerPK>}` with 8-byte MAC truncation
+- **Correct ParamID-to-curve mappings**: Per BSI TR-03110 Part 3, Table D.1 (ParamIDs 8-18)
+- **EF.CardAccess auto-detection**: `PerformPACE` reads EF.CardAccess and overrides default protocol/curve parameters
+- **Multi-context AID probing**: Tries MF, EstEID contactless AID, and eMRTD AID for PACE initialization
+- Tests for new raw AES functions and verbose control
+
+### Fixed
+
+- **SM MAC input padding**: ISO 9797-1 Method 2 padding applied to full CMAC input before computation (K1 subkey path)
+- **SM IV computation**: Uses `AES_ECB_Enc(K_enc, SSC)` instead of zero IV
+- **SM SSC size**: Stored as block-size bytes (16 for AES), not 8
+- **SM Le' byte**: Appended `Le'=0x00` to all SM-wrapped APDUs
+- **SM data encryption**: Uses `AESEncryptCBCRaw` (ISO padding, no PKCS#7)
+- **PACE nonce decryption**: AES-CBC with zero IV (not ECB) — required for multi-block nonces (AES-256)
+- **KDF hash selection**: SHA-256 for key lengths ≤ 32 bytes per BSI TR-03110
+- **OID constants**: Corrected PACE OID mappings (DH-GM=.1, ECDH-GM=.2, DH-IM=.3, ECDH-IM=.4)
+- **CLA byte for GA**: Steps 1-3 use CLA=0x10 (command chaining), Step 4 uses CLA=0x00
+
 ## [1.0.0] - 2025-11-17
 
 ### Added
@@ -49,5 +80,6 @@ This is the first stable release suitable for production use with Estonian ID ca
 
 The library is currently used in production by the `eid-pd-reader` project for reading personal data from Estonian ID cards via NFC.
 
+[1.1.0]: https://github.com/aarepuusepp/libopenpace-go/releases/tag/v1.1.0
 [1.0.0]: https://github.com/aarepuusepp/libopenpace-go/releases/tag/v1.0.0
 

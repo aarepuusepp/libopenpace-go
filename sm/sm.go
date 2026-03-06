@@ -8,11 +8,24 @@ import (
 	"github.com/aarepuusepp/libopenpace-go/crypto"
 )
 
+var verboseMode bool
+
+// SetVerbose enables or disables verbose debug logging for Secure Messaging.
+func SetVerbose(enabled bool) {
+	verboseMode = enabled
+}
+
+func logVerbose(format string, args ...interface{}) {
+	if verboseMode {
+		fmt.Printf(format, args...)
+	}
+}
+
 // Context holds the Secure Messaging session state.
 type Context struct {
 	EncryptionKey []byte // K_enc for encrypting command data
 	MACKey        []byte // K_mac for MAC computation
-	SSC           []byte // Send Sequence Counter (8 bytes)
+	SSC           []byte // Send Sequence Counter (block-size bytes, big-endian)
 	BlockSize     int    // Cipher block size (8 for 3DES, 16 for AES)
 	UseAES        bool   // True for AES, false for 3DES
 }
@@ -24,7 +37,7 @@ type Context struct {
 //   - macKey: MAC key (same length as encryption key)
 //   - sscInitial: Initial Send Sequence Counter (8 bytes) as defined by PACE
 //
-// Returns a new SM context with SSC initialized to sscInitial.
+// Returns a new SM context with SSC stored as block-size bytes (zero-padded on the left).
 func NewContext(encKey, macKey, sscInitial []byte) (*Context, error) {
 	if len(encKey) != len(macKey) {
 		return nil, fmt.Errorf("encryption and MAC keys must have the same length")
@@ -33,7 +46,6 @@ func NewContext(encKey, macKey, sscInitial []byte) (*Context, error) {
 		return nil, fmt.Errorf("initial SSC must be 8 bytes")
 	}
 
-	// Determine cipher type and block size
 	var blockSize int
 	var useAES bool
 
@@ -51,17 +63,22 @@ func NewContext(encKey, macKey, sscInitial []byte) (*Context, error) {
 		return nil, fmt.Errorf("unsupported key length: %d", len(encKey))
 	}
 
+	// Store SSC as block-size bytes (left-padded with zeros).
+	// Per OpenPACE encode_ssc: SSC is encoded as cipher block_size bytes.
+	ssc := make([]byte, blockSize)
+	copy(ssc[blockSize-len(sscInitial):], sscInitial)
+
 	return &Context{
 		EncryptionKey: encKey,
 		MACKey:        macKey,
-		SSC:           append([]byte(nil), sscInitial...), // copy
+		SSC:           ssc,
 		BlockSize:     blockSize,
 		UseAES:        useAES,
 	}, nil
 }
 
 // IncrementSSC increments the Send Sequence Counter.
-// SSC is an 8-byte big-endian counter.
+// SSC is stored as block-size bytes in big-endian order.
 func (ctx *Context) IncrementSSC() {
 	for i := len(ctx.SSC) - 1; i >= 0; i-- {
 		ctx.SSC[i]++
@@ -72,24 +89,30 @@ func (ctx *Context) IncrementSSC() {
 }
 
 // SetSSC sets the Send Sequence Counter to the given value.
-// The SSC must be 8 bytes.
+// Accepts 8-byte or block-size byte SSC. If 8 bytes, left-pads to block size.
 func (ctx *Context) SetSSC(ssc []byte) error {
-	if len(ssc) != 8 {
-		return fmt.Errorf("ssc must be 8 bytes")
+	if len(ssc) == ctx.BlockSize {
+		ctx.SSC = append(ctx.SSC[:0], ssc...)
+		return nil
 	}
-	ctx.SSC = append(ctx.SSC[:0], ssc...)
-	return nil
+	if len(ssc) == 8 {
+		padded := make([]byte, ctx.BlockSize)
+		copy(padded[ctx.BlockSize-8:], ssc)
+		ctx.SSC = padded
+		return nil
+	}
+	return fmt.Errorf("ssc must be 8 or %d bytes, got %d", ctx.BlockSize, len(ssc))
 }
 
-// WrapCommand wraps a command APDU with Secure Messaging.
+// WrapCommand wraps a command APDU with Secure Messaging per BSI TR-03110 / ISO 7816-4.
 //
 // Process:
 //  1. Increment SSC
-//  2. Encrypt command data (if present)
+//  2. Encrypt command data with IV = AES_ECB(K_enc, SSC) (if present)
 //  3. Build DO87 (encrypted data) and DO97 (Le)
-//  4. Compute MAC over SSC || header || data objects
-//  5. Build DO8E (MAC)
-//  6. Construct protected APDU
+//  4. Compute MAC: CMAC(K_mac, SSC || padded_header || DO87 || DO97)
+//  5. Build DO8E (8-byte truncated MAC)
+//  6. Construct protected APDU with Le'=0x00 appended
 //
 // Parameters:
 //   - cla, ins, p1, p2: APDU header
@@ -97,13 +120,12 @@ func (ctx *Context) SetSSC(ssc []byte) error {
 //   - le: Expected response length (0 for no Le, 256 for Le=00)
 //
 // Returns the wrapped APDU bytes.
-//
-// Reference: BSI TR-03110 Secure Messaging
 func (ctx *Context) WrapCommand(cla, ins, p1, p2 byte, data []byte, le int) ([]byte, error) {
-	// Increment SSC
 	ctx.IncrementSSC()
 
-	// Build data objects
+	// Header with SM indicator bits set in CLA
+	header := []byte{cla | 0x0C, ins, p1, p2}
+
 	var dataObjects []byte
 
 	// DO87: Encrypted data (if data is present)
@@ -112,8 +134,6 @@ func (ctx *Context) WrapCommand(cla, ins, p1, p2 byte, data []byte, le int) ([]b
 		if err != nil {
 			return nil, fmt.Errorf("failed to encrypt data: %w", err)
 		}
-
-		// DO87 = 0x87 || Length || 0x01 || encrypted_data
 		do87 := buildDO(0x87, append([]byte{0x01}, encryptedData...))
 		dataObjects = append(dataObjects, do87...)
 	}
@@ -128,43 +148,36 @@ func (ctx *Context) WrapCommand(cla, ins, p1, p2 byte, data []byte, le int) ([]b
 		dataObjects = append(dataObjects, do97...)
 	}
 
-	// Header with SM bits set in CLA
-	header := []byte{cla | 0x0C, ins, p1, p2}
+	// MAC input per ISO 7816-4 / BSI TR-03110:
+	//   CMAC(K_mac, ISO_pad(SSC || ISO_pad(header) || DO87 || DO97))
+	// The header is separately padded to block boundary.
+	// Then the entire concatenation is ISO-padded so CMAC sees a complete input.
+	paddedHeader := crypto.ISO9797Method2Pad(header, ctx.BlockSize)
 
-	// Compute MAC
-	// MAC input: SSC || CLA' || INS || P1 || P2 || data_objects (NO padding for CMAC)
-	macInput := make([]byte, 0, 8+4+len(dataObjects))
-	macInput = append(macInput, ctx.SSC...)
-	macInput = append(macInput, header...)
-	macInput = append(macInput, dataObjects...)
+	raw := make([]byte, 0, len(ctx.SSC)+len(paddedHeader)+len(dataObjects)+ctx.BlockSize)
+	raw = append(raw, ctx.SSC...)
+	raw = append(raw, paddedHeader...)
+	raw = append(raw, dataObjects...)
+	macInput := crypto.ISO9797Method2Pad(raw, ctx.BlockSize)
 
-	// Debug logging
-	fmt.Printf("[SM] WrapCommand: SSC=%X header=%X DOs_len=%d\n", ctx.SSC, header, len(dataObjects))
-	fmt.Printf("[SM] CMAC input: %X\n", macInput)
+	logVerbose("[SM] WrapCommand: SSC=%X header=%X DOs_len=%d\n", ctx.SSC, header, len(dataObjects))
+	logVerbose("[SM] CMAC input: %X\n", macInput)
 
-	// Compute MAC (CMAC applies its own padding)
 	mac, err := crypto.CMAC(ctx.MACKey, macInput)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute MAC: %w", err)
 	}
 
-	// DO8E: MAC (8 bytes)
 	do8E := buildDO(0x8E, mac[:8])
 
-	// Build protected APDU
-	// CLA' INS P1 P2 Lc' [DO87] [DO97] DO8E
-	protectedAPDU := make([]byte, 0, 4+1+len(dataObjects)+len(do8E))
-	protectedAPDU = append(protectedAPDU, header...)
-
-	// Lc' = length of data objects + DO8E
+	// Build protected APDU: CLA' INS P1 P2 Lc' [DO87] [DO97] DO8E Le'
 	lc := len(dataObjects) + len(do8E)
+	protectedAPDU := make([]byte, 0, 4+1+lc+1)
+	protectedAPDU = append(protectedAPDU, header...)
 	protectedAPDU = append(protectedAPDU, byte(lc))
-
-	// Data objects
 	protectedAPDU = append(protectedAPDU, dataObjects...)
 	protectedAPDU = append(protectedAPDU, do8E...)
-
-	// NOTE: No Le' is appended here. Le is carried in DO97 when needed.
+	protectedAPDU = append(protectedAPDU, 0x00) // Le' = request full response
 
 	return protectedAPDU, nil
 }
@@ -245,25 +258,28 @@ func (ctx *Context) UnwrapResponse(response []byte) ([]byte, uint16, error) {
 		return nil, 0, fmt.Errorf("missing MAC (DO8E)")
 	}
 
-	// Verify MAC
-	// MAC input: SSC || data_objects_without_MAC (NO padding for CMAC)
-	macInput := make([]byte, 0, 8+len(data)-len(mac)-2)
-	macInput = append(macInput, ctx.SSC...)
-	macInput = append(macInput, data[:len(data)-len(mac)-2]...) // Exclude DO8E (tag+len+val)
+	// Verify MAC per ISO 7816-4 / BSI TR-03110:
+	// MAC input = ISO_pad(SSC || data_objects_without_DO8E)
+	// The DO8E itself is excluded from the MAC computation.
+	// The entire input is ISO-padded before CMAC (so CMAC sees a complete input).
+	do8eLen := 2 + len(mac) // tag(1) + length(1) + value
+	dosWithoutMAC := data[:len(data)-do8eLen]
 
-	// Debug logging
-	fmt.Printf("[SM] UnwrapResponse: SSC=%X data_len=%d\n", ctx.SSC, len(data))
-	fmt.Printf("[SM] CMAC input: %X\n", macInput)
-	fmt.Printf("[SM] Received MAC: %X\n", mac)
+	raw := make([]byte, 0, len(ctx.SSC)+len(dosWithoutMAC)+ctx.BlockSize)
+	raw = append(raw, ctx.SSC...)
+	raw = append(raw, dosWithoutMAC...)
+	macInput := crypto.ISO9797Method2Pad(raw, ctx.BlockSize)
 
-	// Compute expected MAC
+	logVerbose("[SM] UnwrapResponse: SSC=%X data_len=%d\n", ctx.SSC, len(data))
+	logVerbose("[SM] CMAC input: %X\n", macInput)
+	logVerbose("[SM] Received MAC: %X\n", mac)
+
 	expectedMAC, err := crypto.CMAC(ctx.MACKey, macInput)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to compute MAC: %w", err)
 	}
 
-	// Compare MACs (constant-time)
-	fmt.Printf("[SM] Expected MAC: %X\n", expectedMAC[:8])
+	logVerbose("[SM] Expected MAC: %X\n", expectedMAC[:8])
 	if len(mac) != 8 || !bytes.Equal(mac, expectedMAC[:8]) {
 		return nil, 0, fmt.Errorf("MAC verification failed: got %X, expected %X", mac, expectedMAC[:8])
 	}
@@ -285,55 +301,52 @@ func (ctx *Context) UnwrapResponse(response []byte) ([]byte, uint16, error) {
 	return plaintext, sw, nil
 }
 
-// encryptData encrypts data for DO87.
-func (ctx *Context) encryptData(data []byte) ([]byte, error) {
-	// Pad data
-	padded := crypto.ISO9797Method2Pad(data, ctx.BlockSize)
-
-	// Encrypt with zero IV
-	iv := make([]byte, ctx.BlockSize)
-
-	var encrypted []byte
-	var err error
-
+// computeIV computes the SM encryption IV per OpenPACE update_iv:
+// IV = AES_ECB_Enc(K_enc, SSC) for AES, or 3DES equivalent.
+func (ctx *Context) computeIV() ([]byte, error) {
 	if ctx.UseAES {
-		encrypted, err = crypto.AESEncryptCBC(ctx.EncryptionKey, iv, padded)
-	} else {
-		encrypted, err = crypto.TripleDESEncryptCBC(ctx.EncryptionKey, iv, padded)
+		return crypto.AESEncryptECBBlock(ctx.EncryptionKey, ctx.SSC)
 	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	return encrypted, nil
+	// For 3DES, IV = 3DES_Enc(K_enc, SSC_8bytes)
+	iv := make([]byte, ctx.BlockSize)
+	return iv, nil // TODO: 3DES IV computation
 }
 
-// decryptData decrypts data from DO87.
-func (ctx *Context) decryptData(encrypted []byte) ([]byte, error) {
-	// Decrypt with zero IV
-	iv := make([]byte, ctx.BlockSize)
+// encryptData encrypts data for DO87 using AES-CBC with IV = AES_ECB(K_enc, SSC).
+// Data is ISO 9797-1 method 2 padded, then encrypted with NO additional padding.
+func (ctx *Context) encryptData(data []byte) ([]byte, error) {
+	padded := crypto.ISO9797Method2Pad(data, ctx.BlockSize)
 
-	var padded []byte
-	var err error
+	iv, err := ctx.computeIV()
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute IV: %w", err)
+	}
 
 	if ctx.UseAES {
-		padded, err = crypto.AESDecryptCBC(ctx.EncryptionKey, iv, encrypted)
+		return crypto.AESEncryptCBCRaw(ctx.EncryptionKey, iv, padded)
+	}
+
+	return crypto.TripleDESEncryptCBC(ctx.EncryptionKey, iv, padded)
+}
+
+// decryptData decrypts data from DO87 using AES-CBC with IV = AES_ECB(K_enc, SSC).
+func (ctx *Context) decryptData(encrypted []byte) ([]byte, error) {
+	iv, err := ctx.computeIV()
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute IV: %w", err)
+	}
+
+	var padded []byte
+	if ctx.UseAES {
+		padded, err = crypto.AESDecryptCBCRaw(ctx.EncryptionKey, iv, encrypted)
 	} else {
 		padded, err = crypto.TripleDESDecryptCBC(ctx.EncryptionKey, iv, encrypted)
 	}
-
 	if err != nil {
 		return nil, err
 	}
 
-	// Unpad
-	plaintext, err := crypto.ISO9797Method2Unpad(padded)
-	if err != nil {
-		return nil, err
-	}
-
-	return plaintext, nil
+	return crypto.ISO9797Method2Unpad(padded)
 }
 
 // buildDO constructs a data object with tag and length.

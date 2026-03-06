@@ -1,13 +1,27 @@
 package pace
 
 import (
-	"crypto/ecdh"
+	"crypto/elliptic"
+	"crypto/rand"
 	"fmt"
-	
+
 	"github.com/aarepuusepp/libopenpace-go/crypto"
 	"github.com/aarepuusepp/libopenpace-go/sm"
 	"go.gnd.pw/crypto/brainpool"
 )
+
+var verboseMode bool
+
+// SetVerbose enables or disables verbose debug logging for the PACE protocol.
+func SetVerbose(enabled bool) {
+	verboseMode = enabled
+}
+
+func logVerbose(format string, args ...interface{}) {
+	if verboseMode {
+		fmt.Printf(format, args...)
+	}
+}
 
 // CardInterface defines the interface for smart card communication.
 // This allows the PACE implementation to work with any card reader.
@@ -148,43 +162,49 @@ func EstablishPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID,
 }
 
 // setupDomainParameters sets up domain parameters based on parameter ID.
+//
+// BSI TR-03110 Part 3, Appendix A.3.1 standardized domain parameters:
+//
+//	 8 = secp192r1      9 = brainpoolP192r1
+//	10 = secp224r1     11 = brainpoolP224r1
+//	12 = secp256r1     13 = brainpoolP256r1
+//	14 = brainpoolP320r1
+//	15 = secp384r1     16 = brainpoolP384r1
+//	17 = brainpoolP512r1
+//	18 = secp521r1
 func setupDomainParameters(ctx *PACEContext, parameterID int) error {
 	keyAgreementType := ctx.Protocol.GetKeyAgreementType()
-	
+
 	if keyAgreementType == KeyAgreementECDH {
-		// Map parameter ID to curve
-		var curve ecdh.Curve
+		var ecCurve elliptic.Curve
+		var curveName string
+
 		switch parameterID {
-		case 8: // NIST P-256
-			curve = ecdh.P256()
-		case 9: // NIST P-384
-			curve = ecdh.P384()
-		case 10: // NIST P-521
-			curve = ecdh.P521()
-		case 12: // brainpoolP256r1 (Idemia cards, older spec)
-			// brainpool curves use elliptic.Curve, not ecdh.Curve
-			ctx.DomainParams = &DomainParameters{
-				Type:          DomainTypeEC,
-				EllipticCurve: brainpool.P256r1(),
-			}
-			fmt.Printf("[PACE] Using brainpoolP256r1 curve (ParamID=12, Idemia)\n")
-			return nil
-		case 16: // brainpoolP256r1 (Thales cards, newer spec)
-			// brainpool curves use elliptic.Curve, not ecdh.Curve
-			ctx.DomainParams = &DomainParameters{
-				Type:          DomainTypeEC,
-				EllipticCurve: brainpool.P256r1(),
-			}
-			fmt.Printf("[PACE] Using brainpoolP256r1 curve (ParamID=16, Thales)\n")
-			return nil
+		case 12: // secp256r1 (NIST P-256)
+			ecCurve = elliptic.P256()
+			curveName = "secp256r1 (NIST P-256)"
+		case 13: // brainpoolP256r1
+			ecCurve = brainpool.P256r1()
+			curveName = "brainpoolP256r1"
+		case 15: // secp384r1 (NIST P-384)
+			ecCurve = elliptic.P384()
+			curveName = "secp384r1 (NIST P-384)"
+		case 16: // brainpoolP384r1
+			ecCurve = brainpool.P384r1()
+			curveName = "brainpoolP384r1"
+		case 18: // secp521r1 (NIST P-521)
+			ecCurve = elliptic.P521()
+			curveName = "secp521r1 (NIST P-521)"
 		default:
 			return fmt.Errorf("unsupported EC parameter ID: %d", parameterID)
 		}
-		
+
 		ctx.DomainParams = &DomainParameters{
-			Type:  DomainTypeEC,
-			Curve: curve,
+			Type:          DomainTypeEC,
+			EllipticCurve: ecCurve,
 		}
+		logVerbose("[PACE] Using %s curve (ParamID=%d)\n", curveName, parameterID)
+		return nil
 	} else {
 		// DH parameters
 		params, err := crypto.GetStandardDHParameters("modp2048")
@@ -207,15 +227,17 @@ func setupDomainParameters(ctx *PACEContext, parameterID int) error {
 // In a real implementation, this would come from the card.
 func generateSimulatedPeerKey(ctx *PACEContext) ([]byte, error) {
 	keyAgreementType := ctx.Protocol.GetKeyAgreementType()
-	
+
 	if keyAgreementType == KeyAgreementECDH {
-		// Generate a second ECDH keypair to simulate the peer
-		curve := ctx.DomainParams.Curve
-		_, peerPub, err := crypto.ECDHGenerateKey(curve)
+		curve := ctx.DomainParams.EllipticCurve
+		if curve == nil {
+			return nil, fmt.Errorf("elliptic curve required for ECDH peer key generation")
+		}
+		_, x, y, err := elliptic.GenerateKey(curve, rand.Reader)
 		if err != nil {
 			return nil, err
 		}
-		return peerPub.Bytes(), nil
+		return elliptic.Marshal(curve, x, y), nil
 	} else {
 		// Generate a second DH keypair to simulate the peer
 		_, peerPub, err := crypto.DHGenerateKey(&crypto.DHParameters{

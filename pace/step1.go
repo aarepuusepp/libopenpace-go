@@ -1,9 +1,10 @@
 package pace
 
 import (
+	"crypto/aes"
 	"crypto/rand"
 	"fmt"
-	
+
 	"github.com/aarepuusepp/libopenpace-go/crypto"
 	"github.com/aarepuusepp/libopenpace-go/kdf"
 )
@@ -28,10 +29,12 @@ import (
 func PACE_STEP1_enc_nonce(ctx *PACEContext, secret *PACESecret) ([]byte, error) {
 	cipherSuite := ctx.Protocol.GetCipherSuite()
 	
-	// Determine nonce size based on cipher suite
+	// Determine nonce size and key size based on cipher suite.
+	// Per BSI TR-03110: nonce s must be at least key_length bits,
+	// and must be a multiple of the cipher block size.
 	var nonceSize int
 	var keySize int
-	
+
 	switch cipherSuite {
 	case CipherSuiteAES128:
 		nonceSize = 16
@@ -40,50 +43,45 @@ func PACE_STEP1_enc_nonce(ctx *PACEContext, secret *PACESecret) ([]byte, error) 
 		nonceSize = 16
 		keySize = 24
 	case CipherSuiteAES256:
-		nonceSize = 16
+		nonceSize = 32
 		keySize = 32
 	case CipherSuite3DES:
 		nonceSize = 8
-		keySize = 24 // 3DES uses 24-byte key
+		keySize = 24
 	default:
 		return nil, fmt.Errorf("unsupported cipher suite: %v", cipherSuite)
 	}
-	
-	// Generate random nonce
+
 	nonce := make([]byte, nonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
-	
-	// Store nonce in context for later use
+
 	ctx.Nonce = nonce
-	
-	// Derive encryption key from secret using KDF_PI
+
 	hashAlg := kdf.GetHashAlgorithm(keySize)
 	encKey := kdf.KDF_PI(secret.Value, nil, keySize, hashAlg)
-	
-	// Adjust parity for 3DES keys
+
 	if cipherSuite == CipherSuite3DES {
 		encKey = kdf.AdjustKeyParity(encKey)
 	}
-	
-	// Encrypt nonce
+
 	var encryptedNonce []byte
 	var err error
-	
+
 	switch cipherSuite {
 	case CipherSuiteAES128, CipherSuiteAES192, CipherSuiteAES256:
-		// Use AES in ECB mode (no IV needed for single block)
-		encryptedNonce, err = crypto.AESEncryptECB(encKey, nonce)
+		// Per OpenPACE: cipher_no_pad uses AES-CBC with zero IV
+		zeroIV := make([]byte, aes.BlockSize)
+		encryptedNonce, err = crypto.AESEncryptCBCRaw(encKey, zeroIV, nonce)
 	case CipherSuite3DES:
-		// Use 3DES in ECB mode
 		encryptedNonce, err = crypto.TripleDESEncryptECB(encKey, nonce)
 	}
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt nonce: %w", err)
 	}
-	
+
 	return encryptedNonce, nil
 }
 

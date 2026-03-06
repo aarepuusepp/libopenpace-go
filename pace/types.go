@@ -6,6 +6,13 @@ import (
 	"math/big"
 )
 
+// ECPoint holds an EC point as separate coordinates (for brainpool curves
+// where the standard crypto/ecdh package cannot be used).
+type ECPoint struct {
+	X *big.Int
+	Y *big.Int
+}
+
 // PACEContext holds the state for a PACE protocol session.
 // It maintains all cryptographic material and protocol state throughout
 // the PACE establishment process.
@@ -15,29 +22,30 @@ type PACEContext struct {
 	ParameterID   int               // Standardized domain parameter ID
 	DomainParams  *DomainParameters // Domain parameters (curve or DH group)
 	CardAccessOID []byte            // Actual OID bytes from EF.CardAccess (DER encoded)
-	
+
 	// Nonce (Step 1-2)
-	Nonce         []byte            // Decrypted nonce from card
-	
-	// Mapping (Step 3A)
-	MappedGenerator interface{}     // Mapped generator (EC point or DH element)
-	
+	Nonce []byte // Decrypted nonce from card
+
+	// Mapping (Generic Mapping ephemeral keypair)
+	MappingPrivateKey []byte // Terminal's mapping private key scalar
+	MappedGenerator   interface{} // Mapped generator (*ECPoint or *big.Int)
+
 	// Key Agreement (Step 3B)
-	EphemeralPrivateKey interface{} // Ephemeral private key (ECDH or DH)
-	EphemeralPublicKey  interface{} // Ephemeral public key
-	PeerPublicKey       interface{} // Peer's ephemeral public key
+	EphemeralPrivateKey interface{} // Private key ([]byte for brainpool, *ecdh.PrivateKey for NIST)
+	EphemeralPublicKey  interface{} // Public key ([]byte uncompressed for brainpool, *ecdh.PublicKey for NIST)
+	PeerPublicKey       interface{} // Peer's ephemeral public key (same types as above)
 	SharedSecret        []byte      // Computed shared secret
-	
+
 	// Session Keys (Step 3C)
-	EncryptionKey []byte            // K_enc for secure messaging
-	MACKey        []byte            // K_mac for secure messaging
-	
+	EncryptionKey []byte // K_enc for secure messaging
+	MACKey        []byte // K_mac for secure messaging
+
 	// Authentication (Step 3D)
-	AuthToken     []byte            // Our authentication token
-	PeerAuthToken []byte            // Peer's authentication token
-	
+	AuthToken     []byte // Our authentication token
+	PeerAuthToken []byte // Peer's authentication token
+
 	// Secure Messaging state
-	SM            *SMContext        // Secure messaging context
+	SM *SMContext // Secure messaging context
 }
 
 // PACESecret represents the shared secret used to establish PACE.
@@ -122,29 +130,33 @@ const (
 type ProtocolOID string
 
 const (
-	// PACE with ECDH and Generic Mapping
-	OID_PACE_ECDH_GM_AES128 ProtocolOID = "0.4.0.127.0.7.2.2.4.1.2"
-	OID_PACE_ECDH_GM_AES192 ProtocolOID = "0.4.0.127.0.7.2.2.4.1.3"
-	OID_PACE_ECDH_GM_AES256 ProtocolOID = "0.4.0.127.0.7.2.2.4.1.4"
-	OID_PACE_ECDH_GM_3DES   ProtocolOID = "0.4.0.127.0.7.2.2.4.1.1"
-	
-	// PACE with ECDH and Integrated Mapping
-	OID_PACE_ECDH_IM_AES128 ProtocolOID = "0.4.0.127.0.7.2.2.4.2.2"
-	OID_PACE_ECDH_IM_AES192 ProtocolOID = "0.4.0.127.0.7.2.2.4.2.3"
-	OID_PACE_ECDH_IM_AES256 ProtocolOID = "0.4.0.127.0.7.2.2.4.2.4"
-	OID_PACE_ECDH_IM_3DES   ProtocolOID = "0.4.0.127.0.7.2.2.4.2.1"
-	
-	// PACE with DH and Generic Mapping
-	OID_PACE_DH_GM_AES128 ProtocolOID = "0.4.0.127.0.7.2.2.4.3.2"
-	OID_PACE_DH_GM_AES192 ProtocolOID = "0.4.0.127.0.7.2.2.4.3.3"
-	OID_PACE_DH_GM_AES256 ProtocolOID = "0.4.0.127.0.7.2.2.4.3.4"
-	OID_PACE_DH_GM_3DES   ProtocolOID = "0.4.0.127.0.7.2.2.4.3.1"
-	
-	// PACE with DH and Integrated Mapping
-	OID_PACE_DH_IM_AES128 ProtocolOID = "0.4.0.127.0.7.2.2.4.4.2"
-	OID_PACE_DH_IM_AES192 ProtocolOID = "0.4.0.127.0.7.2.2.4.4.3"
-	OID_PACE_DH_IM_AES256 ProtocolOID = "0.4.0.127.0.7.2.2.4.4.4"
-	OID_PACE_DH_IM_3DES   ProtocolOID = "0.4.0.127.0.7.2.2.4.4.1"
+	// BSI TR-03110: id-PACE = 0.4.0.127.0.7.2.2.4
+	//   .1 = DH-GM,  .2 = ECDH-GM,  .3 = DH-IM,  .4 = ECDH-IM
+	// Cipher: .1 = 3DES,  .2 = AES-128,  .3 = AES-192,  .4 = AES-256
+
+	// PACE with DH and Generic Mapping (0.4.0.127.0.7.2.2.4.1.x)
+	OID_PACE_DH_GM_3DES   ProtocolOID = "0.4.0.127.0.7.2.2.4.1.1"
+	OID_PACE_DH_GM_AES128 ProtocolOID = "0.4.0.127.0.7.2.2.4.1.2"
+	OID_PACE_DH_GM_AES192 ProtocolOID = "0.4.0.127.0.7.2.2.4.1.3"
+	OID_PACE_DH_GM_AES256 ProtocolOID = "0.4.0.127.0.7.2.2.4.1.4"
+
+	// PACE with ECDH and Generic Mapping (0.4.0.127.0.7.2.2.4.2.x)
+	OID_PACE_ECDH_GM_3DES   ProtocolOID = "0.4.0.127.0.7.2.2.4.2.1"
+	OID_PACE_ECDH_GM_AES128 ProtocolOID = "0.4.0.127.0.7.2.2.4.2.2"
+	OID_PACE_ECDH_GM_AES192 ProtocolOID = "0.4.0.127.0.7.2.2.4.2.3"
+	OID_PACE_ECDH_GM_AES256 ProtocolOID = "0.4.0.127.0.7.2.2.4.2.4"
+
+	// PACE with DH and Integrated Mapping (0.4.0.127.0.7.2.2.4.3.x)
+	OID_PACE_DH_IM_3DES   ProtocolOID = "0.4.0.127.0.7.2.2.4.3.1"
+	OID_PACE_DH_IM_AES128 ProtocolOID = "0.4.0.127.0.7.2.2.4.3.2"
+	OID_PACE_DH_IM_AES192 ProtocolOID = "0.4.0.127.0.7.2.2.4.3.3"
+	OID_PACE_DH_IM_AES256 ProtocolOID = "0.4.0.127.0.7.2.2.4.3.4"
+
+	// PACE with ECDH and Integrated Mapping (0.4.0.127.0.7.2.2.4.4.x)
+	OID_PACE_ECDH_IM_3DES   ProtocolOID = "0.4.0.127.0.7.2.2.4.4.1"
+	OID_PACE_ECDH_IM_AES128 ProtocolOID = "0.4.0.127.0.7.2.2.4.4.2"
+	OID_PACE_ECDH_IM_AES192 ProtocolOID = "0.4.0.127.0.7.2.2.4.4.3"
+	OID_PACE_ECDH_IM_AES256 ProtocolOID = "0.4.0.127.0.7.2.2.4.4.4"
 )
 
 // MappingType identifies the domain parameter mapping method.

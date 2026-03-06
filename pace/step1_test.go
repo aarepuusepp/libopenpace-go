@@ -4,6 +4,18 @@ import (
 	"testing"
 )
 
+func TestSetVerbose(t *testing.T) {
+	SetVerbose(true)
+	if !verboseMode {
+		t.Error("SetVerbose(true) did not enable verbose mode")
+	}
+
+	SetVerbose(false)
+	if verboseMode {
+		t.Error("SetVerbose(false) did not disable verbose mode")
+	}
+}
+
 func TestPACE_STEP1_enc_nonce(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -69,7 +81,7 @@ func TestPACE_STEP1_nonce_size(t *testing.T) {
 	}{
 		{OID_PACE_ECDH_GM_AES128, 16},
 		{OID_PACE_ECDH_GM_AES192, 16},
-		{OID_PACE_ECDH_GM_AES256, 16},
+		{OID_PACE_ECDH_GM_AES256, 32},
 		{OID_PACE_ECDH_GM_3DES, 8},
 	}
 	

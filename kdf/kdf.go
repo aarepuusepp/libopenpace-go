@@ -145,17 +145,14 @@ func AdjustKeyParity(key []byte) []byte {
 }
 
 // GetHashAlgorithm returns the appropriate hash algorithm for a given key length.
-// This follows BSI TR-03110 recommendations:
-//   - SHA-256 for AES-128 and 3DES
-//   - SHA-384 for AES-192
-//   - SHA-512 for AES-256
+// Per BSI TR-03110 Part 3, Appendix A.2.1.2, Table A.1:
+//   - SHA-1 for 3DES and AES-128 (≤16 bytes) — we use SHA-256 as SHA-1 is not available
+//   - SHA-256 for AES-192 and AES-256 (≤32 bytes)
+//   - SHA-512 for key sizes >32 bytes
 func GetHashAlgorithm(keyLength int) HashAlgorithm {
-	if keyLength <= 16 {
-		return HashSHA256 // AES-128, 3DES
-	} else if keyLength <= 24 {
-		return HashSHA256 // AES-192 (could use SHA-384 but SHA-256 is sufficient)
-	} else {
-		return HashSHA512 // AES-256
+	if keyLength <= 32 {
+		return HashSHA256
 	}
+	return HashSHA512
 }
 

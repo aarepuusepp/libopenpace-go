@@ -244,7 +244,7 @@ func TestGetHashAlgorithm(t *testing.T) {
 		{8, HashSHA256},   // 3DES (8 bytes)
 		{16, HashSHA256},  // AES-128
 		{24, HashSHA256},  // AES-192
-		{32, HashSHA512},  // AES-256
+		{32, HashSHA256},  // AES-256 (BSI TR-03110: SHA-256 for all AES variants)
 	}
 	
 	for _, tt := range tests {

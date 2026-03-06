@@ -1,35 +1,29 @@
 package pace
 
 import (
-	"crypto/rand"
+	"crypto/elliptic"
 	"fmt"
 	"math/big"
 )
 
 // PACE_STEP3A_map_generator implements PACE Step 3A: Map Generator.
 //
-// This step maps the standard domain parameters using the nonce to create
-// a new generator. This prevents the card from using a fixed generator,
-// which could be exploited.
-//
 // Two mapping methods are supported:
-//   - Generic Mapping (GM): Maps the generator using a random point
-//   - Integrated Mapping (IM): Maps the generator using the nonce directly
+//   - Generic Mapping (GM): G' = s*G + H, where H = ECDH(mappingPriv, cardMappingPub)
+//   - Integrated Mapping (IM): G' = f(nonce, G) — hash-to-curve variant
 //
 // Parameters:
-//   - ctx: PACE context (must have nonce and domain parameters)
-//   - mappingData: Mapping data from the card (for GM) or nil (for IM)
+//   - ctx: PACE context (must have nonce, domain params, and MappingPrivateKey for GM)
+//   - cardMappingPub: Card's mapping public key bytes (for GM) or nil (for IM)
 //
-// Returns an error if mapping fails.
-//
-// Reference: BSI TR-03110 v2.21 Section 4.4.3
-func PACE_STEP3A_map_generator(ctx *PACEContext, mappingData []byte) error {
+// Reference: BSI TR-03110 v2.21 Section 4.4.1
+func PACE_STEP3A_map_generator(ctx *PACEContext, cardMappingPub []byte) error {
 	mappingType := ctx.Protocol.GetMappingType()
 	keyAgreementType := ctx.Protocol.GetKeyAgreementType()
-	
+
 	switch mappingType {
 	case MappingGeneric:
-		return mapGeneratorGM(ctx, mappingData, keyAgreementType)
+		return mapGeneratorGM(ctx, cardMappingPub, keyAgreementType)
 	case MappingIntegrated:
 		return mapGeneratorIM(ctx, keyAgreementType)
 	case MappingCAM:
@@ -41,100 +35,108 @@ func PACE_STEP3A_map_generator(ctx *PACEContext, mappingData []byte) error {
 
 // mapGeneratorGM implements Generic Mapping (GM).
 //
-// Process:
-//  1. Receive mapping data (public key) from card
-//  2. Compute shared secret H = s * PCD_Map_PK (where s is derived from nonce)
-//  3. New generator G' = G + H
+// Per BSI TR-03110 Section 4.4.1:
+//  1. Both sides exchange ephemeral mapping public keys (done in GA Step 2)
+//  2. Compute shared point H = ECDH(terminal_mapping_priv, card_mapping_pub)
+//  3. Compute new generator G' = s*G + H (point addition on the curve)
 //
-// For ECDH: G' = G + H (point addition)
-// For DH: G' = G * H mod P (modular multiplication)
-func mapGeneratorGM(ctx *PACEContext, mappingData []byte, keyAgreementType KeyAgreementType) error {
-	if len(mappingData) == 0 {
-		return fmt.Errorf("mapping data required for Generic Mapping")
+// For DH: G' = G^s * H mod p (modular multiplication)
+func mapGeneratorGM(ctx *PACEContext, cardMappingPub []byte, keyAgreementType KeyAgreementType) error {
+	if len(cardMappingPub) == 0 {
+		return fmt.Errorf("card mapping public key required for Generic Mapping")
 	}
-	
 	if len(ctx.Nonce) == 0 {
 		return fmt.Errorf("nonce required for mapping")
 	}
-	
+	if len(ctx.MappingPrivateKey) == 0 {
+		return fmt.Errorf("mapping private key required for Generic Mapping")
+	}
+
 	switch keyAgreementType {
 	case KeyAgreementECDH:
-		return mapGeneratorGM_ECDH(ctx, mappingData)
+		return mapGeneratorGM_ECDH(ctx, cardMappingPub)
 	case KeyAgreementDH:
-		return mapGeneratorGM_DH(ctx, mappingData)
+		return mapGeneratorGM_DH(ctx, cardMappingPub)
 	default:
 		return fmt.Errorf("unsupported key agreement type: %v", keyAgreementType)
 	}
 }
 
-// mapGeneratorGM_ECDH implements Generic Mapping for ECDH.
-func mapGeneratorGM_ECDH(ctx *PACEContext, mappingData []byte) error {
-	if ctx.DomainParams == nil || ctx.DomainParams.Type != DomainTypeEC {
-		return fmt.Errorf("EC domain parameters required")
+// mapGeneratorGM_ECDH implements Generic Mapping for ECDH (brainpool and NIST curves).
+//
+// Algorithm:
+//  1. Parse card's mapping public key as EC point
+//  2. H = mappingPriv * cardMappingPub (scalar multiplication)
+//  3. sG = nonce * G (scalar-basemult with the nonce)
+//  4. G' = sG + H (point addition)
+//
+// The mapped generator G' is stored as *ECPoint in ctx.MappedGenerator.
+func mapGeneratorGM_ECDH(ctx *PACEContext, cardMappingPubBytes []byte) error {
+	curve := ctx.DomainParams.EllipticCurve
+	if curve == nil {
+		return fmt.Errorf("elliptic.Curve required for Generic Mapping ECDH")
 	}
-	
-	// Parse mapping data as EC public key
-	curve := ctx.DomainParams.Curve
-	mappingPoint, err := curve.NewPublicKey(mappingData)
-	if err != nil {
-		return fmt.Errorf("failed to parse mapping point: %w", err)
+
+	// Parse card's mapping public key (uncompressed: 04 || X || Y)
+	cardX, cardY := elliptic.Unmarshal(curve, cardMappingPubBytes)
+	if cardX == nil {
+		return fmt.Errorf("failed to unmarshal card mapping public key (%d bytes)", len(cardMappingPubBytes))
 	}
-	
-	// Derive scalar from nonce
-	// s = nonce interpreted as integer (mod curve order)
-	// For simplicity, we use the nonce bytes directly as the scalar
-	// In a full implementation, this should be done more carefully
-	
-	// Compute shared secret: H = s * PCD_Map_PK
-	// This requires ECDH with the nonce as private key
-	// Since Go's ecdh package doesn't expose point operations directly,
-	// we'll store the mapping point for now
-	// A full implementation would need to use a crypto library with EC point operations
-	
-	// For now, store the mapping data
-	ctx.MappedGenerator = mappingPoint
-	
+
+	// H = mappingPriv * cardMappingPub (ECDH shared point, using BOTH coordinates)
+	hx, hy := curve.ScalarMult(cardX, cardY, ctx.MappingPrivateKey)
+
+	// sG = nonce * G (scalar multiplication with the standard base point)
+	sgx, sgy := curve.ScalarBaseMult(ctx.Nonce)
+
+	// G' = sG + H (point addition on the curve)
+	gPrimeX, gPrimeY := curve.Add(sgx, sgy, hx, hy)
+
+	logVerbose("[PACE] Mapped generator G' computed (GM-ECDH)\n")
+
+	ctx.MappedGenerator = &ECPoint{X: gPrimeX, Y: gPrimeY}
 	return nil
 }
 
 // mapGeneratorGM_DH implements Generic Mapping for DH.
-func mapGeneratorGM_DH(ctx *PACEContext, mappingData []byte) error {
+//
+// G' = G^s * H mod p, where H = cardMappingPub^mappingPriv mod p
+func mapGeneratorGM_DH(ctx *PACEContext, cardMappingPubBytes []byte) error {
 	if ctx.DomainParams == nil || ctx.DomainParams.Type != DomainTypeDH {
 		return fmt.Errorf("DH domain parameters required")
 	}
-	
-	// Parse mapping data as DH public key
-	mappingValue := new(big.Int).SetBytes(mappingData)
-	
-	// Derive scalar from nonce
+
+	cardPubVal := new(big.Int).SetBytes(cardMappingPubBytes)
+
+	// H = cardPubVal^mappingPriv mod P
+	mappingPriv := new(big.Int).SetBytes(ctx.MappingPrivateKey)
+	H := new(big.Int).Exp(cardPubVal, mappingPriv, ctx.DomainParams.P)
+
+	// sG = G^s mod P (nonce as exponent)
 	s := new(big.Int).SetBytes(ctx.Nonce)
-	
-	// Compute shared secret: H = mappingValue^s mod P
-	H := new(big.Int).Exp(mappingValue, s, ctx.DomainParams.P)
-	
-	// New generator: G' = G * H mod P
-	mappedG := new(big.Int).Mul(ctx.DomainParams.G, H)
-	mappedG.Mod(mappedG, ctx.DomainParams.P)
-	
-	// Store mapped generator
-	ctx.MappedGenerator = mappedG
-	
+	sG := new(big.Int).Exp(ctx.DomainParams.G, s, ctx.DomainParams.P)
+
+	// G' = sG * H mod P
+	gPrime := new(big.Int).Mul(sG, H)
+	gPrime.Mod(gPrime, ctx.DomainParams.P)
+
+	ctx.MappedGenerator = gPrime
 	return nil
 }
 
 // mapGeneratorIM implements Integrated Mapping (IM).
 //
-// Process:
-//  1. Use nonce directly to compute mapping
-//  2. New generator G' = nonce * G
+// For ECDH: The nonce is used to derive a new generator via deterministic
+// point generation. Since Go's standard library doesn't expose hash-to-curve,
+// we use a simplified approach: generate a deterministic keypair seeded
+// from the nonce, and use its public key as the mapped generator.
 //
-// For ECDH: G' = nonce * G (scalar multiplication)
-// For DH: G' = G^nonce mod P (modular exponentiation)
+// For DH: G' = G^nonce mod P
 func mapGeneratorIM(ctx *PACEContext, keyAgreementType KeyAgreementType) error {
 	if len(ctx.Nonce) == 0 {
-		return fmt.Errorf("nonce required for mapping")
+		return fmt.Errorf("nonce required for Integrated Mapping")
 	}
-	
+
 	switch keyAgreementType {
 	case KeyAgreementECDH:
 		return mapGeneratorIM_ECDH(ctx)
@@ -146,37 +148,20 @@ func mapGeneratorIM(ctx *PACEContext, keyAgreementType KeyAgreementType) error {
 }
 
 // mapGeneratorIM_ECDH implements Integrated Mapping for ECDH.
+//
+// Per BSI TR-03110 Annex A.3.4, Integrated Mapping uses the ICART algorithm
+// or Shallue-van de Woestijne for hash-to-curve. For practical purposes with
+// Estonian ID cards (which use Generic Mapping), this is a simplified version.
 func mapGeneratorIM_ECDH(ctx *PACEContext) error {
-	if ctx.DomainParams == nil || ctx.DomainParams.Type != DomainTypeEC {
-		return fmt.Errorf("EC domain parameters required")
+	curve := ctx.DomainParams.EllipticCurve
+	if curve == nil {
+		return fmt.Errorf("elliptic.Curve required for Integrated Mapping ECDH")
 	}
-	
-	// For Integrated Mapping with ECDH:
-	// G' = nonce * G (scalar multiplication of generator by nonce)
-	//
-	// Since Go's ecdh package doesn't expose point operations directly,
-	// and the nonce size (16 bytes for AES) doesn't match the curve's
-	// private key size, we'll use a simplified approach:
-	// Generate a new keypair and use it as the mapped generator.
-	//
-	// Note: A full implementation would need proper EC point arithmetic
-	// to compute nonce * G. This simplified version is sufficient for
-	// demonstration purposes.
-	
-	curve := ctx.DomainParams.Curve
-	
-	// Generate a keypair (in production, this would be derived from nonce)
-	privKey, err := curve.GenerateKey(rand.Reader)
-	if err != nil {
-		return fmt.Errorf("failed to generate key for mapping: %w", err)
-	}
-	
-	// The public key serves as the mapped generator
-	mappedG := privKey.PublicKey()
-	
-	// Store mapped generator
-	ctx.MappedGenerator = mappedG
-	
+
+	// G' = nonce * G (scalar multiplication)
+	gPrimeX, gPrimeY := curve.ScalarBaseMult(ctx.Nonce)
+
+	ctx.MappedGenerator = &ECPoint{X: gPrimeX, Y: gPrimeY}
 	return nil
 }
 
@@ -185,18 +170,10 @@ func mapGeneratorIM_DH(ctx *PACEContext) error {
 	if ctx.DomainParams == nil || ctx.DomainParams.Type != DomainTypeDH {
 		return fmt.Errorf("DH domain parameters required")
 	}
-	
-	// For Integrated Mapping with DH:
-	// G' = G^nonce mod P
-	
+
 	nonce := new(big.Int).SetBytes(ctx.Nonce)
-	
-	// Compute G' = G^nonce mod P
 	mappedG := new(big.Int).Exp(ctx.DomainParams.G, nonce, ctx.DomainParams.P)
-	
-	// Store mapped generator
+
 	ctx.MappedGenerator = mappedG
-	
 	return nil
 }
-

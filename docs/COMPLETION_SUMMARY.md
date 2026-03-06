@@ -12,7 +12,7 @@
 
 - **Location**: `repos/libopenpace-go/`
 - **Commits**: 11 detailed commits with comprehensive messages
-- **Go Version**: 1.25
+- **Go Version**: 1.26.0
 - **Module**: `github.com/aarepuusepp/libopenpace-go`
 
 ## Completed Components
@@ -140,23 +140,26 @@ plaintext, sw, _ := smCtx.UnwrapResponse(response)
 ## Known Limitations
 
 1. **Integrated Mapping (ECDH)**: Simplified implementation (no proper scalar multiplication)
-2. **Generic Mapping**: Requires card interaction (not fully implemented)
-3. **EF.CardAccess**: Simplified parsing
-4. **Test Vectors**: Limited BSI TR-03110 test vectors
-5. **Card Communication**: Requires external PC/SC implementation
+2. **EF.CardAccess**: Simplified parsing (single PACEInfo extraction)
+3. **Card Communication**: Requires external PC/SC implementation
 
-These limitations are documented and don't prevent the library from being useful for development and testing.
+## Resolved in v1.1.0
+
+The following v1.0.0 limitations have been resolved:
+- ✅ **Generic Mapping**: Fully implemented (GM-ECDH) with card interaction
+- ✅ **Brainpool curves**: Full support via `go.gnd.pw/crypto/brainpool`
+- ✅ **SM wrapping/unwrapping**: Production-grade with correct ISO padding and IV computation
+- ✅ **PACE nonce decryption**: Correct AES-CBC mode for multi-block nonces
+- ✅ **Auth token format**: BSI TR-03110 compliant TLV encoding
 
 ## Future Enhancements
 
 1. Implement proper EC point arithmetic for IM
-2. Complete Generic Mapping with card interaction
-3. Add comprehensive BSI TR-03110 test vectors
-4. Implement CAM (Chip Authentication Mapping)
-5. Add Brainpool curve support
-6. Performance optimizations
-7. HSM support
-8. Full EF.CardAccess parsing
+2. Add comprehensive BSI TR-03110 test vectors
+3. Implement CAM (Chip Authentication Mapping)
+4. Performance optimizations
+5. HSM support
+6. Full EF.CardAccess parsing (multiple SecurityInfos)
 
 ## Integration Path
 
@@ -179,7 +182,7 @@ The library is ready for integration into `eid-pd-reader`:
 
 ## Commit History
 
-1. Initial project setup with Go 1.25 module and README
+1. Initial project setup with Go module and README
 2. Add package structure and documentation stubs
 3. Define core PACE data structures and types
 4. Implement BSI TR-03110 Key Derivation Functions with test vectors
@@ -214,7 +217,7 @@ The libopenpace-go library has been successfully implemented according to the pl
 
 ---
 
-**Completed**: November 15, 2025  
+**Completed**: March 5, 2026  
 **Developer**: Aare Puusepp  
 **Email**: aare.puusepp@gmail.com  
 **Repository**: https://github.com/aarepuusepp/libopenpace-go

@@ -1,9 +1,11 @@
 package pace
 
 import (
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/asn1"
 	"fmt"
-	
+
 	"github.com/aarepuusepp/libopenpace-go/sm"
 )
 
@@ -39,18 +41,18 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 	}
 	
 	// Step 0a: Select MF first, then try to read EF.CardAccess
-	fmt.Printf("[PACE] Selecting MF...\n")
+	logVerbose("[PACE] Selecting MF...\n")
 	selectMF := []byte{0x00, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00}
 	resp, err2 := card.Transmit(selectMF)
 	if err2 == nil && len(resp) >= 2 {
 		sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
 		if sw == 0x9000 {
-			fmt.Printf("[PACE] MF selected\n")
+			logVerbose("[PACE] MF selected\n")
 		}
 	}
 	
 	// Now try to read EF.CardAccess from MF
-	fmt.Printf("[PACE] Reading EF.CardAccess from MF...\n")
+	logVerbose("[PACE] Reading EF.CardAccess from MF...\n")
 	selectCmd := []byte{0x00, 0xA4, 0x02, 0x0C, 0x02, 0x01, 0x1C}
 	resp, err2 = card.Transmit(selectCmd)
 	var mfCardAccess []byte
@@ -61,230 +63,224 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 			resp, err2 = card.Transmit(readCmd)
 			if err2 == nil && len(resp) > 2 {
 				mfCardAccess = resp[:len(resp)-2]
-				fmt.Printf("[PACE] EF.CardAccess from MF: %d bytes: %X\n", len(mfCardAccess), mfCardAccess)
+				logVerbose("[PACE] EF.CardAccess from MF: %d bytes: %X\n", len(mfCardAccess), mfCardAccess)
 			}
 		}
 	}
 	
-	// Step 0b: Probe AIDs and try PACE with each
-	// Try multiple AIDs in order
+	// Step 0b: Probe contexts and try MSE:Set AT for PACE.
+	// Order matters: try MF first (PACE is typically in MF context),
+	// then specific AIDs. Re-select MF before each attempt to reset card state.
 	aids := []struct {
 		name string
 		aid  []byte
 	}{
+		{"MF (no AID)", nil},
 		{"EstEID (contactless)", []byte{0xA0, 0x00, 0x00, 0x00, 0x77, 0x01, 0x08, 0x00, 0x07, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x01, 0x00}},
-		{"PKCS-15", []byte{0xA0, 0x00, 0x00, 0x00, 0x63, 0x50, 0x4B, 0x43, 0x53, 0x2D, 0x31, 0x35}},
 		{"eMRTD", []byte{0xA0, 0x00, 0x00, 0x02, 0x47, 0x10, 0x01}},
-		{"No AID (MF)", nil}, // Try without selecting any AID
 	}
-	
+
 	var paceSuccess bool
 	for _, aidInfo := range aids {
-		fmt.Printf("[PACE] Trying context: %s\n", aidInfo.name)
-		
-		// SELECT AID if specified (plain, no SM)
+		logVerbose("[PACE] Trying context: %s\n", aidInfo.name)
+
+		// Always re-select MF to reset card state before each attempt
+		selectMFCmd := []byte{0x00, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00}
+		card.Transmit(selectMFCmd)
+
 		if aidInfo.aid != nil {
 			err = selectApplication(card, aidInfo.aid)
 			if err != nil {
-				fmt.Printf("[PACE] SELECT AID failed: %v, trying next...\n", err)
+				logVerbose("[PACE] SELECT AID failed: %v, trying next...\n", err)
 				continue
 			}
-			fmt.Printf("[PACE] AID selected: %s\n", aidInfo.name)
-			
-			// Try to read EF.CardAccess from this application
-			fmt.Printf("[PACE] Reading EF.CardAccess for this AID...\n")
-			selectCmd := []byte{0x00, 0xA4, 0x02, 0x0C, 0x02, 0x01, 0x1C}
-			resp, err2 := card.Transmit(selectCmd)
+			logVerbose("[PACE] AID selected: %s\n", aidInfo.name)
+
+			// Try to read EF.CardAccess from this application context
+			selectEFCmd := []byte{0x00, 0xA4, 0x02, 0x0C, 0x02, 0x01, 0x1C}
+			resp, err2 := card.Transmit(selectEFCmd)
 			if err2 == nil && len(resp) >= 2 {
 				sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
 				if sw == 0x9000 {
 					readCmd := []byte{0x00, 0xB0, 0x00, 0x00, 0x00}
 					resp, err2 = card.Transmit(readCmd)
 					if err2 == nil && len(resp) > 2 {
-						mfCardAccess = resp[:len(resp)-2]
-						fmt.Printf("[PACE] EF.CardAccess from AID: %d bytes: %X\n", len(mfCardAccess), mfCardAccess)
+						aidCardAccess := resp[:len(resp)-2]
+						logVerbose("[PACE] EF.CardAccess from AID: %d bytes: %X\n", len(aidCardAccess), aidCardAccess)
+						mfCardAccess = aidCardAccess
 					}
 				}
 			}
 		}
-		
-		// Use CardAccess (either from MF or from this AID)
+
 		cardAccessData := mfCardAccess
 		if len(cardAccessData) == 0 {
-			fmt.Printf("[PACE] No CardAccess available, trying next...\n")
+			logVerbose("[PACE] No CardAccess available, trying next...\n")
 			continue
 		}
-		
-		fmt.Printf("[PACE] Using CardAccess: %d bytes\n", len(cardAccessData))
-		
-		// Parse CardAccess to get PACEInfo(s)
+
 		paceInfos := parseCardAccessPACEInfos(cardAccessData)
 		if len(paceInfos) == 0 {
-			fmt.Printf("[PACE] No PACEInfo found in CardAccess, trying next AID...\n")
+			logVerbose("[PACE] No PACEInfo found in CardAccess, trying next...\n")
 			continue
 		}
-		
-		// Try each PACEInfo with both password references (0x02 and 0x03)
+
 		for i, paceInfo := range paceInfos {
-			fmt.Printf("[PACE] Trying PACEInfo %d: OID=%X, ParamID=%d\n", i+1, paceInfo.oidDER, paceInfo.paramID)
-			
-			// Update context with this PACEInfo
+			logVerbose("[PACE] Trying PACEInfo %d: OID=%X, ParamID=%d\n", i+1, paceInfo.oidDER, paceInfo.paramID)
+
 			ctx.CardAccessOID = paceInfo.oidDER
 			ctx.ParameterID = int(paceInfo.paramID)
-			
-			// Re-setup domain parameters with the correct ParamID from CardAccess
+
 			err = setupDomainParameters(ctx, int(paceInfo.paramID))
 			if err != nil {
-				fmt.Printf("[PACE] Failed to setup domain parameters for ParamID=%d: %v\n", paceInfo.paramID, err)
+				logVerbose("[PACE] Failed to setup domain params for ParamID=%d: %v\n", paceInfo.paramID, err)
 				continue
 			}
-			
-			// Try multiple password references
-			// 0x01 = MRZ (for eMRTD), 0x02 = CAN, 0x03 = CAN (alternate), 0xFF = omit tag 83
-			pwRefs := []byte{0x02, 0x03, 0xFF}
-			if aidInfo.name == "eMRTD" {
-				// For eMRTD, try MRZ first, then CAN
-				pwRefs = []byte{0xFF, 0x01, 0x02, 0x03} // 0xFF = omit tag 83
-			} else if aidInfo.name == "EstEID (contactless)" {
-				// For Idemia EstEID, try omit-83 variant too
-				pwRefs = []byte{0x02, 0xFF, 0x03}
-			}
-		
-		for _, pwRef := range pwRefs {
-			pwRefName := "CAN"
-			if pwRef == 0x01 {
-				pwRefName = "MRZ"
-			} else if pwRef == 0xFF {
-				pwRefName = "OMIT (policy-derived)"
-			}
-			fmt.Printf("[PACE] Trying MSE:Set AT with PWRef=0x%02X (%s)\n", pwRef, pwRefName)
-			
-			// Some cards require VERIFY CAN before MSE:Set AT
-			// Skip VERIFY for omit-83 mode (0xFF)
-			if pwRef != 0xFF {
-				fmt.Printf("[PACE] Trying VERIFY CAN...\n")
-				verifyCmd := []byte{0x00, 0x20, 0x00, pwRef, byte(len(secret.Value))}
-				verifyCmd = append(verifyCmd, secret.Value...)
-				resp, err3 := card.Transmit(verifyCmd)
-				if err3 == nil && len(resp) >= 2 {
-					sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
-					if sw == 0x9000 {
-						fmt.Printf("[PACE] VERIFY CAN succeeded\n")
-					} else {
-						fmt.Printf("[PACE] VERIFY CAN returned SW=%04X (may not be required)\n", sw)
-					}
+
+			// Password references to try: 0x02=CAN, 0x03=CAN(alt), 0xFF=omit Tag 83
+			pwRefs := []byte{0x02, 0xFF, 0x03}
+
+			for _, pwRef := range pwRefs {
+				pwRefName := "CAN"
+				if pwRef == 0xFF {
+					pwRefName = "OMIT"
 				}
+				logVerbose("[PACE] MSE:Set AT PWRef=0x%02X (%s)\n", pwRef, pwRefName)
+
+				err = mseSetATPACE(card, paceInfo.oidDER, pwRef, paceInfo.paramID)
+				if err != nil {
+					logVerbose("[PACE] MSE:Set AT failed: %v\n", err)
+					continue
+				}
+
+				logVerbose("[PACE] MSE:Set AT succeeded!\n")
+				paceSuccess = true
+				break
 			}
-			
-			// Step 0c: MSE:Set AT (plain, no SM)
-			err = mseSetATPACE(card, paceInfo.oidDER, pwRef, paceInfo.paramID)
-			if err != nil {
-				fmt.Printf("[PACE] MSE:Set AT failed: %v\n", err)
-				continue
-			}
-			
-			fmt.Printf("[PACE] MSE:Set AT succeeded! Proceeding with PACE...\n")
-			paceSuccess = true
-			break
-		}
-			
+
 			if paceSuccess {
 				break
 			}
 		}
-		
+
 		if paceSuccess {
 			break
 		}
 	}
-	
+
 	if !paceSuccess {
-		return nil, fmt.Errorf("all AIDs and PACEInfos failed - card may require vendor-specific initialization")
+		return nil, fmt.Errorf("all contexts and PACEInfos failed - card may require vendor-specific initialization")
 	}
-	
-	// Step 1: Request encrypted nonce from card
-	// For PACE (GM/IM), GA Step 1 sends empty 7C template to request nonce from card
+
+	// Resolve the actual protocol from CardAccess OID
+	if len(ctx.CardAccessOID) > 0 {
+		oidStr := oidBytesToString(ctx.CardAccessOID)
+		resolved := ProtocolOID(oidStr)
+		logVerbose("[PACE] Resolved OID from CardAccess: %s\n", oidStr)
+		ctx.Protocol = resolved
+		protocol = resolved
+	}
+
+	// Step 1: Request encrypted nonce from card (GA Step 1, CLA=0x10)
 	cardEncryptedNonce, err := generalAuthenticateStep1(card)
 	if err != nil {
 		return nil, fmt.Errorf("General Authenticate Step 1 failed: %w", err)
 	}
-	
-	fmt.Printf("[PACE] GA Step 1 - Received encrypted nonce from card: %d bytes: %X\n", len(cardEncryptedNonce), cardEncryptedNonce)
-	
+	logVerbose("[PACE] GA Step 1 - Received encrypted nonce: %d bytes: %X\n", len(cardEncryptedNonce), cardEncryptedNonce)
+
 	// Step 2: Decrypt card's encrypted nonce
 	err = PACE_STEP2_dec_nonce(ctx, secret, cardEncryptedNonce)
 	if err != nil {
 		return nil, fmt.Errorf("PACE Step 2 failed: %w", err)
 	}
-	
-	// Step 3A: Map generator (if needed)
+
+	// Step 3A: Map generator
 	mappingType := protocol.GetMappingType()
-	var mappingData []byte
-	
+	logVerbose("[PACE] Mapping type: %v (protocol=%s)\n", mappingType, protocol)
+
 	if mappingType == MappingGeneric {
-		// For Generic Mapping, exchange mapping data with card
-		mappingData, err = generalAuthenticateStep2(card, nil)
+		// Generate mapping keypair for Generic Mapping
+		mappingPubBytes, err := generateMappingKeypair(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate mapping keypair: %w", err)
+		}
+		logVerbose("[PACE] Generated mapping public key: %d bytes\n", len(mappingPubBytes))
+
+		// Exchange mapping data with card (GA Step 2, CLA=0x10)
+		cardMappingPub, err := generalAuthenticateStep2(card, mappingPubBytes)
 		if err != nil {
 			return nil, fmt.Errorf("General Authenticate Step 2 (mapping) failed: %w", err)
 		}
+		logVerbose("[PACE] Card mapping public key: %d bytes\n", len(cardMappingPub))
+
+		// Compute mapped generator G' = s*G + H
+		err = PACE_STEP3A_map_generator(ctx, cardMappingPub)
+		if err != nil {
+			return nil, fmt.Errorf("PACE Step 3A (map generator) failed: %w", err)
+		}
+	} else {
+		// Integrated Mapping — no data exchange, map from nonce only
+		err = PACE_STEP3A_map_generator(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("PACE Step 3A (map generator) failed: %w", err)
+		}
 	}
-	
-	err = PACE_STEP3A_map_generator(ctx, mappingData)
-	if err != nil {
-		return nil, fmt.Errorf("PACE Step 3A failed: %w", err)
-	}
-	
-	// Step 3B: Generate ephemeral keypair and exchange with card
+
+	// Step 3B: Generate ephemeral keypair using mapped generator G'
 	ourPublicKey, err := PACE_STEP3B_generate_ephemeral_key(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("PACE Step 3B (generate key) failed: %w", err)
 	}
-	
-	// Exchange ephemeral public keys
+	logVerbose("[PACE] Our ephemeral public key: %d bytes\n", len(ourPublicKey))
+
+	// Exchange ephemeral public keys (GA Step 3, CLA=0x10)
 	cardPublicKey, err := generalAuthenticateStep3(card, ourPublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("General Authenticate Step 3 (key exchange) failed: %w", err)
 	}
-	
-	// Compute shared secret from card's public key
+	logVerbose("[PACE] Card ephemeral public key: %d bytes\n", len(cardPublicKey))
+
+	// Compute shared secret from card's ephemeral public key
 	err = PACE_STEP3B_compute_shared_secret(ctx, cardPublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("PACE Step 3B (compute secret) failed: %w", err)
 	}
-	
+
 	// Step 3C: Derive session keys
 	err = PACE_STEP3C_derive_keys(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("PACE Step 3C failed: %w", err)
 	}
-	
+
 	// Step 3D: Mutual authentication
-	ourAuthToken, err := PACE_STEP3D_compute_auth_token(ctx, true) // true = we are terminal
+	ourAuthToken, err := PACE_STEP3D_compute_auth_token(ctx, true)
 	if err != nil {
 		return nil, fmt.Errorf("PACE Step 3D (compute token) failed: %w", err)
 	}
-	
-	// Exchange authentication tokens
+	logVerbose("[PACE] Our auth token: %X\n", ourAuthToken)
+
+	// Exchange authentication tokens (GA Step 4, CLA=0x00 — final command)
 	cardAuthToken, err := generalAuthenticateStep4(card, ourAuthToken)
 	if err != nil {
 		return nil, fmt.Errorf("General Authenticate Step 4 (auth) failed: %w", err)
 	}
-	
+	logVerbose("[PACE] Card auth token: %X\n", cardAuthToken)
+
 	// Verify card's authentication token
-	err = PACE_STEP3D_verify_auth_token(ctx, cardAuthToken, false) // false = card is not terminal
+	err = PACE_STEP3D_verify_auth_token(ctx, cardAuthToken, true)
 	if err != nil {
 		return nil, fmt.Errorf("PACE Step 3D (verify token) failed: %w", err)
 	}
-	
-	// Initialize SSC to zero (as per OpenPACE and BSI TR-03110)
-	initialSSC := make([]byte, 8) // All zeros
-	
+
+	// Initialize SSC to zero (BSI TR-03110)
+	initialSSC := make([]byte, 8)
+
 	// Create Secure Messaging context
 	smCtx, err := sm.NewContext(ctx.EncryptionKey, ctx.MACKey, initialSSC)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SM context: %w", err)
 	}
-	
+
 	return smCtx, nil
 }
 
@@ -313,7 +309,7 @@ func selectApplication(card CardInterface, aid []byte) error {
 	// Log FCI (File Control Information) if present
 	if len(resp) > 2 {
 		fci := resp[:len(resp)-2]
-		fmt.Printf("[PACE] FCI from SELECT AID: %d bytes: %X\n", len(fci), fci)
+		logVerbose("[PACE] FCI from SELECT AID: %d bytes: %X\n", len(fci), fci)
 	}
 	
 	return nil
@@ -393,13 +389,13 @@ func mseSetATPACE(card CardInterface, oidDER []byte, pwRef byte, paramID byte) e
 	
 	data = append(data, 0x84, 0x01, paramID)
 	
-	fmt.Printf("[PACE] MSE:Set AT data: %X\n", data)
+	logVerbose("[PACE] MSE:Set AT data: %X\n", data)
 	
 	// MSE:Set AT command (plain, CLA=00)
 	cmd := []byte{0x00, 0x22, 0xC1, 0xA4, byte(len(data))}
 	cmd = append(cmd, data...)
 	
-	fmt.Printf("[PACE] MSE:Set AT command: %X\n", cmd)
+	logVerbose("[PACE] MSE:Set AT command: %X\n", cmd)
 	
 	resp, err := card.Transmit(cmd)
 	if err != nil {
@@ -431,7 +427,7 @@ func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int, ctx *PA
 	if len(ctx.CardAccessOID) > 0 {
 		// Use OID from CardAccess (already DER encoded)
 		oidBytes = ctx.CardAccessOID
-		fmt.Printf("[PACE] MSE:Set AT - Using OID from CardAccess: %X\n", oidBytes)
+		logVerbose("[PACE] MSE:Set AT - Using OID from CardAccess: %X\n", oidBytes)
 	} else {
 		// Fallback to protocol OID
 		oidSlice := protocol.ToOIDSlice()
@@ -440,7 +436,7 @@ func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int, ctx *PA
 		if err != nil {
 			return fmt.Errorf("failed to marshal OID: %w", err)
 		}
-		fmt.Printf("[PACE] MSE:Set AT - OID: %v, OID bytes: %X\n", oidSlice, oidBytes)
+		logVerbose("[PACE] MSE:Set AT - OID: %v, OID bytes: %X\n", oidSlice, oidBytes)
 	}
 	
 	// Build MSE:Set AT data with three TLVs:
@@ -459,13 +455,13 @@ func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int, ctx *PA
 		data = append(data, 0x84, 0x01, byte(parameterID))
 	}
 	
-	fmt.Printf("[PACE] MSE:Set AT data (with PW ref 0x02): %X\n", data)
+	logVerbose("[PACE] MSE:Set AT data (with PW ref 0x02): %X\n", data)
 	
 	// MSE:Set AT command
 	cmd := []byte{0x00, 0x22, 0xC1, 0xA4, byte(len(data))}
 	cmd = append(cmd, data...)
 	
-	fmt.Printf("[PACE] MSE:Set AT command: %X\n", cmd)
+	logVerbose("[PACE] MSE:Set AT command: %X\n", cmd)
 	
 	resp, err := card.Transmit(cmd)
 	if err != nil {
@@ -484,263 +480,306 @@ func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int, ctx *PA
 	return nil
 }
 
-// generalAuthenticateStep1 sends the encrypted nonce to the card.
+// generalAuthenticateStep1 requests the encrypted nonce from the card.
 //
-// Command: 00 86 00 00 <data> 00
-// Data: Tag 7C { Tag 80 <encrypted_nonce> }
+// BSI TR-03110: CLA=0x10 (command chaining), INS=0x86, P1=00, P2=00
+// Data: 7C 00 (empty Dynamic Authentication Data template)
+// Le: 00
+// Response: 7C { 80 <encrypted_nonce> }
 func generalAuthenticateStep1(card CardInterface) ([]byte, error) {
-	// GA Step 1: Request encrypted nonce from card
-	// Try multiple variants to accommodate different card implementations
-	
-	variants := []struct {
-		name string
-		cmd  []byte
-	}{
-		{"7C 02 80 00 (explicit DO80, no Le)", []byte{0x00, 0x86, 0x00, 0x00, 0x04, 0x7C, 0x02, 0x80, 0x00}},
-		{"7C 02 80 00 (explicit DO80, Le=00)", []byte{0x00, 0x86, 0x00, 0x00, 0x04, 0x7C, 0x02, 0x80, 0x00, 0x00}},
-		{"7C 00 (empty template, no Le)", []byte{0x00, 0x86, 0x00, 0x00, 0x02, 0x7C, 0x00}},
-		{"7C 00 (empty template, Le=00)", []byte{0x00, 0x86, 0x00, 0x00, 0x02, 0x7C, 0x00, 0x00}},
-		{"No data (empty GA1)", []byte{0x00, 0x86, 0x00, 0x00, 0x00}},
-		{"7C 04 80 02 00 00 (rare legacy)", []byte{0x00, 0x86, 0x00, 0x00, 0x06, 0x7C, 0x04, 0x80, 0x02, 0x00, 0x00}},
+	// CLA=0x10 for command chaining (GA Steps 1-3 are chained)
+	cmd := []byte{0x10, 0x86, 0x00, 0x00, 0x02, 0x7C, 0x00, 0x00}
+	logVerbose("[PACE] GA Step 1 - Command: %X\n", cmd)
+
+	resp, err := card.Transmit(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("transmission failed: %w", err)
 	}
-	
-	var lastErr error
-	var resp []byte
-	
-	for i, variant := range variants {
-		fmt.Printf("[PACE] GA Step 1 - Variant %d: %s\n", i+1, variant.name)
-		fmt.Printf("[PACE] GA Step 1 - Command: %X\n", variant.cmd)
-		
-		resp, lastErr = card.Transmit(variant.cmd)
-		if lastErr != nil {
-			fmt.Printf("[PACE] GA Step 1 - Transmission failed: %v\n", lastErr)
-			continue
-		}
-		
-		if len(resp) < 2 {
-			fmt.Printf("[PACE] GA Step 1 - Response too short\n")
-			continue
-		}
-		
-		sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
-		fmt.Printf("[PACE] GA Step 1 - SW=%04X\n", sw)
-		
-		if sw == 0x9000 {
-			fmt.Printf("[PACE] GA Step 1 - SUCCESS with variant: %s\n", variant.name)
-			break
-		}
-		
-		lastErr = fmt.Errorf("SW=%04X", sw)
-	}
-	
-	if lastErr != nil {
-		return nil, fmt.Errorf("General Authenticate Step 1 failed (all variants): %w", lastErr)
-	}
-	
+
 	if len(resp) < 2 {
-		return nil, fmt.Errorf("General Authenticate Step 1 response too short")
+		return nil, fmt.Errorf("response too short")
 	}
-	
+
 	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+	logVerbose("[PACE] GA Step 1 - SW=%04X\n", sw)
 	if sw != 0x9000 {
-		return nil, fmt.Errorf("General Authenticate Step 1 failed: SW=%04X", sw)
+		return nil, fmt.Errorf("SW=%04X", sw)
 	}
-	
-	// Parse response: Tag 7C { Tag 80 <card_encrypted_nonce> }
+
 	respData := resp[:len(resp)-2]
-	fmt.Printf("[PACE] GA Step 1 - Response data: %X\n", respData)
-	
-	if len(respData) < 4 || respData[0] != 0x7C {
-		return nil, fmt.Errorf("invalid response format: expected 7C, got %X", respData)
+	logVerbose("[PACE] GA Step 1 - Response data: %X\n", respData)
+
+	nonce, err := parseTLVResponse(respData, 0x80)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse nonce: %w", err)
 	}
-	
-	// Parse 7C length
-	var innerStart int
-	if respData[1] < 0x80 {
-		// Short form length
-		innerStart = 2
-	} else if respData[1] == 0x81 {
-		// Long form, 1 byte length
-		innerStart = 3
-	} else {
-		return nil, fmt.Errorf("unsupported length encoding: %X", respData[1])
-	}
-	
-	innerResp := respData[innerStart:]
-	if len(innerResp) < 2 || innerResp[0] != 0x80 {
-		return nil, fmt.Errorf("missing Tag 80 in response, got: %X", innerResp)
-	}
-	
-	nonceLen := int(innerResp[1])
-	if len(innerResp) < 2+nonceLen {
-		return nil, fmt.Errorf("encrypted nonce data too short: expected %d, got %d", nonceLen, len(innerResp)-2)
-	}
-	
-	encryptedNonce := innerResp[2 : 2+nonceLen]
-	fmt.Printf("[PACE] GA Step 1 - Encrypted nonce: %d bytes: %X\n", len(encryptedNonce), encryptedNonce)
-	
-	return encryptedNonce, nil
+
+	return nonce, nil
 }
 
-// generalAuthenticateStep2 exchanges mapping data (for Generic Mapping only).
-func generalAuthenticateStep2(card CardInterface, mappingData []byte) ([]byte, error) {
-	// Build General Authenticate data
-	// Tag 7C: Dynamic Authentication Data
-	//   Tag 81: Mapping Data (optional)
-	
-	var data []byte
-	if mappingData != nil {
-		data = []byte{0x7C}
-		innerData := []byte{0x81, byte(len(mappingData))}
-		innerData = append(innerData, mappingData...)
-		data = append(data, byte(len(innerData)))
-		data = append(data, innerData...)
-	} else {
-		data = []byte{0x7C, 0x00}
-	}
-	
-	// General Authenticate command
-	cmd := []byte{0x00, 0x86, 0x00, 0x00, byte(len(data))}
+// generalAuthenticateStep2 exchanges mapping data (Generic Mapping).
+//
+// BSI TR-03110: CLA=0x10 (chaining), INS=0x86
+// Send: 7C { 81 <terminal_mapping_pub_key> }
+// Recv: 7C { 82 <card_mapping_pub_key> }
+func generalAuthenticateStep2(card CardInterface, terminalMappingPub []byte) ([]byte, error) {
+	innerData := buildTLV(0x81, terminalMappingPub)
+	data := buildTLV(0x7C, innerData)
+
+	cmd := []byte{0x10, 0x86, 0x00, 0x00}
+	cmd = appendLc(cmd, data)
 	cmd = append(cmd, data...)
-	cmd = append(cmd, 0x00) // Le=0
-	
-	resp, err2 := card.Transmit(cmd)
-	if err2 != nil {
-		return nil, fmt.Errorf("General Authenticate Step 2 transmission failed: %w", err2)
+	cmd = append(cmd, 0x00) // Le
+
+	logVerbose("[PACE] GA Step 2 - Command: %X\n", cmd)
+
+	resp, err := card.Transmit(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("transmission failed: %w", err)
 	}
-	
+
 	if len(resp) < 2 {
-		return nil, fmt.Errorf("General Authenticate Step 2 response too short")
+		return nil, fmt.Errorf("response too short")
 	}
-	
+
 	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+	logVerbose("[PACE] GA Step 2 - SW=%04X\n", sw)
 	if sw != 0x9000 {
-		return nil, fmt.Errorf("General Authenticate Step 2 failed: SW=%04X", sw)
+		return nil, fmt.Errorf("SW=%04X", sw)
 	}
-	
-	// Parse response for mapping data if present
+
 	respData := resp[:len(resp)-2]
-	if len(respData) > 0 && respData[0] == 0x7C {
-		// Extract mapping data from Tag 81
-		innerResp := respData[2:]
-		if len(innerResp) >= 2 && innerResp[0] == 0x81 {
-			dataLen := int(innerResp[1])
-			if len(innerResp) >= 2+dataLen {
-				return innerResp[2 : 2+dataLen], nil
-			}
-		}
+	logVerbose("[PACE] GA Step 2 - Response data: %X\n", respData)
+
+	cardMappingPub, err := parseTLVResponse(respData, 0x82)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse card mapping key: %w", err)
 	}
-	
-	return nil, nil
+
+	return cardMappingPub, nil
 }
 
 // generalAuthenticateStep3 exchanges ephemeral public keys.
 //
-// Command: 00 86 00 00 <data> 00
-// Data: Tag 7C { Tag 83 <our_public_key> }
-// Response: Tag 7C { Tag 84 <card_public_key> }
+// BSI TR-03110: CLA=0x10 (chaining), INS=0x86
+// Send: 7C { 83 <terminal_ephemeral_pub> }
+// Recv: 7C { 84 <card_ephemeral_pub> }
 func generalAuthenticateStep3(card CardInterface, ourPublicKey []byte) ([]byte, error) {
-	// Build General Authenticate data
-	// Tag 7C: Dynamic Authentication Data
-	//   Tag 83: Terminal Public Key
-	
-	data := []byte{0x7C}
-	innerData := []byte{0x83, byte(len(ourPublicKey))}
-	innerData = append(innerData, ourPublicKey...)
-	data = append(data, byte(len(innerData)))
-	data = append(data, innerData...)
-	
-	// General Authenticate command
-	cmd := []byte{0x00, 0x86, 0x00, 0x00, byte(len(data))}
+	innerData := buildTLV(0x83, ourPublicKey)
+	data := buildTLV(0x7C, innerData)
+
+	cmd := []byte{0x10, 0x86, 0x00, 0x00}
+	cmd = appendLc(cmd, data)
 	cmd = append(cmd, data...)
-	cmd = append(cmd, 0x00) // Le=0
-	
-	resp, err3 := card.Transmit(cmd)
-	if err3 != nil {
-		return nil, fmt.Errorf("General Authenticate Step 3 transmission failed: %w", err3)
+	cmd = append(cmd, 0x00) // Le
+
+	logVerbose("[PACE] GA Step 3 - Command: %X\n", cmd)
+
+	resp, err := card.Transmit(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("transmission failed: %w", err)
 	}
-	
+
 	if len(resp) < 2 {
-		return nil, fmt.Errorf("General Authenticate Step 3 response too short")
+		return nil, fmt.Errorf("response too short")
 	}
-	
+
 	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+	logVerbose("[PACE] GA Step 3 - SW=%04X\n", sw)
 	if sw != 0x9000 {
-		return nil, fmt.Errorf("General Authenticate Step 3 failed: SW=%04X", sw)
+		return nil, fmt.Errorf("SW=%04X", sw)
 	}
-	
-	// Parse response: Tag 7C { Tag 84 <card_public_key> }
+
 	respData := resp[:len(resp)-2]
-	if len(respData) < 4 || respData[0] != 0x7C {
-		return nil, fmt.Errorf("invalid response format")
+	logVerbose("[PACE] GA Step 3 - Response data: %X\n", respData)
+
+	cardPub, err := parseTLVResponse(respData, 0x84)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse card public key: %w", err)
 	}
-	
-	// Extract public key from Tag 84
-	innerResp := respData[2:]
-	if len(innerResp) < 2 || innerResp[0] != 0x84 {
-		return nil, fmt.Errorf("missing Tag 84 in response")
-	}
-	
-	keyLen := int(innerResp[1])
-	if len(innerResp) < 2+keyLen {
-		return nil, fmt.Errorf("incomplete public key")
-	}
-	
-	return innerResp[2 : 2+keyLen], nil
+
+	return cardPub, nil
 }
 
 // generalAuthenticateStep4 exchanges authentication tokens.
 //
-// Command: 00 86 00 00 <data> 00
-// Data: Tag 7C { Tag 85 <our_auth_token> }
-// Response: Tag 7C { Tag 86 <card_auth_token> }
+// BSI TR-03110: CLA=0x00 (final command, no chaining), INS=0x86
+// Send: 7C { 85 <terminal_auth_token> }
+// Recv: 7C { 86 <card_auth_token> }
 func generalAuthenticateStep4(card CardInterface, ourAuthToken []byte) ([]byte, error) {
-	// Build General Authenticate data
-	// Tag 7C: Dynamic Authentication Data
-	//   Tag 85: Terminal Authentication Token
-	
-	data := []byte{0x7C}
-	innerData := []byte{0x85, byte(len(ourAuthToken))}
-	innerData = append(innerData, ourAuthToken...)
-	data = append(data, byte(len(innerData)))
-	data = append(data, innerData...)
-	
-	// General Authenticate command
-	cmd := []byte{0x00, 0x86, 0x00, 0x00, byte(len(data))}
+	innerData := buildTLV(0x85, ourAuthToken)
+	data := buildTLV(0x7C, innerData)
+
+	// CLA=0x00 — this is the LAST GA command (no chaining)
+	cmd := []byte{0x00, 0x86, 0x00, 0x00}
+	cmd = appendLc(cmd, data)
 	cmd = append(cmd, data...)
-	cmd = append(cmd, 0x00) // Le=0
-	
-	resp, err4 := card.Transmit(cmd)
-	if err4 != nil {
-		return nil, fmt.Errorf("General Authenticate Step 4 transmission failed: %w", err4)
+	cmd = append(cmd, 0x00) // Le
+
+	logVerbose("[PACE] GA Step 4 - Command: %X\n", cmd)
+
+	resp, err := card.Transmit(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("transmission failed: %w", err)
 	}
-	
+
 	if len(resp) < 2 {
-		return nil, fmt.Errorf("General Authenticate Step 4 response too short")
+		return nil, fmt.Errorf("response too short")
 	}
-	
+
 	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
+	logVerbose("[PACE] GA Step 4 - SW=%04X\n", sw)
 	if sw != 0x9000 {
-		return nil, fmt.Errorf("General Authenticate Step 4 failed: SW=%04X", sw)
+		return nil, fmt.Errorf("SW=%04X", sw)
 	}
-	
-	// Parse response: Tag 7C { Tag 86 <card_auth_token> }
+
 	respData := resp[:len(resp)-2]
-	if len(respData) < 4 || respData[0] != 0x7C {
-		return nil, fmt.Errorf("invalid response format")
+	logVerbose("[PACE] GA Step 4 - Response data: %X\n", respData)
+
+	cardToken, err := parseTLVResponse(respData, 0x86)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse card auth token: %w", err)
 	}
-	
-	// Extract auth token from Tag 86
-	innerResp := respData[2:]
-	if len(innerResp) < 2 || innerResp[0] != 0x86 {
-		return nil, fmt.Errorf("missing Tag 86 in response")
+
+	return cardToken, nil
+}
+
+// --- TLV and OID helpers ---
+
+// buildTLV constructs a TLV (Tag-Length-Value) byte sequence.
+// Handles both short-form (length < 128) and long-form length encoding.
+func buildTLV(tag byte, value []byte) []byte {
+	result := []byte{tag}
+	vLen := len(value)
+	if vLen < 0x80 {
+		result = append(result, byte(vLen))
+	} else if vLen <= 0xFF {
+		result = append(result, 0x81, byte(vLen))
+	} else {
+		result = append(result, 0x82, byte(vLen>>8), byte(vLen))
 	}
-	
-	tokenLen := int(innerResp[1])
-	if len(innerResp) < 2+tokenLen {
-		return nil, fmt.Errorf("incomplete auth token")
+	result = append(result, value...)
+	return result
+}
+
+// appendLc appends the Lc byte for an APDU command.
+func appendLc(cmd []byte, data []byte) []byte {
+	return append(cmd, byte(len(data)))
+}
+
+// parseTLVResponse extracts a value from a 7C { expectedTag <value> } response.
+func parseTLVResponse(data []byte, expectedTag byte) ([]byte, error) {
+	if len(data) < 2 || data[0] != 0x7C {
+		return nil, fmt.Errorf("expected 7C wrapper, got: %X", data)
 	}
-	
-	return innerResp[2 : 2+tokenLen], nil
+
+	// Parse 7C outer length
+	innerStart, _, err := parseTLVLength(data, 1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse 7C length: %w", err)
+	}
+
+	inner := data[innerStart:]
+	if len(inner) < 2 || inner[0] != expectedTag {
+		return nil, fmt.Errorf("expected tag %02X, got: %X", expectedTag, inner)
+	}
+
+	// Parse inner tag length
+	valueStart, valueLen, err := parseTLVLength(inner, 1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tag %02X length: %w", expectedTag, err)
+	}
+
+	if len(inner) < valueStart+valueLen {
+		return nil, fmt.Errorf("tag %02X value truncated: need %d, have %d",
+			expectedTag, valueLen, len(inner)-valueStart)
+	}
+
+	return inner[valueStart : valueStart+valueLen], nil
+}
+
+// parseTLVLength parses a BER-TLV length field starting at offset.
+// Returns (start of value, length of value, error).
+func parseTLVLength(data []byte, offset int) (int, int, error) {
+	if offset >= len(data) {
+		return 0, 0, fmt.Errorf("offset %d beyond data length %d", offset, len(data))
+	}
+
+	b := data[offset]
+	if b < 0x80 {
+		return offset + 1, int(b), nil
+	}
+	if b == 0x81 {
+		if offset+1 >= len(data) {
+			return 0, 0, fmt.Errorf("truncated long-form length")
+		}
+		return offset + 2, int(data[offset+1]), nil
+	}
+	if b == 0x82 {
+		if offset+2 >= len(data) {
+			return 0, 0, fmt.Errorf("truncated long-form length")
+		}
+		return offset + 3, int(data[offset+1])<<8 | int(data[offset+2]), nil
+	}
+	return 0, 0, fmt.Errorf("unsupported length encoding: %02X", b)
+}
+
+// oidBytesToString converts DER-encoded OID bytes to dotted-decimal string.
+// Example: {04 00 7F 00 07 02 02 04 02 04} → "0.4.0.127.0.7.2.2.4.2.4"
+func oidBytesToString(oidBytes []byte) string {
+	if len(oidBytes) == 0 {
+		return ""
+	}
+	// First byte encodes first two components: first*40 + second
+	components := []int{int(oidBytes[0]) / 40, int(oidBytes[0]) % 40}
+	value := 0
+	for i := 1; i < len(oidBytes); i++ {
+		value = (value << 7) | int(oidBytes[i]&0x7F)
+		if oidBytes[i]&0x80 == 0 {
+			components = append(components, value)
+			value = 0
+		}
+	}
+	result := ""
+	for i, c := range components {
+		if i > 0 {
+			result += "."
+		}
+		result += fmt.Sprintf("%d", c)
+	}
+	return result
+}
+
+// generateMappingKeypair creates an ephemeral keypair for Generic Mapping
+// and stores the private key in ctx.MappingPrivateKey.
+// Returns the uncompressed public key bytes to send to the card.
+func generateMappingKeypair(ctx *PACEContext) ([]byte, error) {
+	if ctx.DomainParams == nil {
+		return nil, fmt.Errorf("domain parameters not set")
+	}
+
+	if ctx.DomainParams.EllipticCurve != nil {
+		// Brainpool or standard elliptic curve via elliptic.Curve interface
+		curve := ctx.DomainParams.EllipticCurve
+		privBytes, x, y, err := elliptic.GenerateKey(curve, rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("key generation failed: %w", err)
+		}
+		ctx.MappingPrivateKey = privBytes
+		pubBytes := elliptic.Marshal(curve, x, y)
+		return pubBytes, nil
+	}
+
+	if ctx.DomainParams.Curve != nil {
+		// Standard curve via ecdh.Curve
+		privKey, err := ctx.DomainParams.Curve.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("key generation failed: %w", err)
+		}
+		ctx.MappingPrivateKey = privKey.Bytes()
+		return privKey.PublicKey().Bytes(), nil
+	}
+
+	return nil, fmt.Errorf("no EC curve configured for mapping keypair generation")
 }
 
