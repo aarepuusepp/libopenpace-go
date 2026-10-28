@@ -1,6 +1,6 @@
 # libopenpace-go
 
-**Version 1.1.0**
+**Version 1.1.1**
 
 Pure Go implementation of the PACE (Password Authenticated Connection Establishment) protocol for Estonian ID card NFC reading.
 
@@ -21,7 +21,7 @@ Based on the OpenPACE C library specification that is available at https://githu
 
 ## Requirements
 
-- Go 1.26.0 or later
+- Go 1.27.3 or later
 - PC/SC compatible smart card reader (for hardware testing)
 
 ## Installation
@@ -99,7 +99,7 @@ The library includes:
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history and release notes.
 
-Current stable version: **1.1.0**
+Current stable version: **1.1.1**
 
 ## License
 
