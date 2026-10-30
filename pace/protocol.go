@@ -28,18 +28,21 @@ import (
 //
 // Reference: BSI TR-03110 v2.21 Section 4.4
 func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, parameterID int) (*sm.Context, error) {
+	if err := ValidateProtocol(protocol); err != nil {
+		return nil, err
+	}
 	// Initialize PACE context
 	ctx := &PACEContext{
 		Protocol:    protocol,
 		ParameterID: parameterID,
 	}
-	
+
 	// Set up domain parameters
 	err := setupDomainParameters(ctx, parameterID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup domain parameters: %w", err)
 	}
-	
+
 	// Step 0a: Select MF first, then try to read EF.CardAccess
 	logVerbose("[PACE] Selecting MF...\n")
 	selectMF := []byte{0x00, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00}
@@ -50,7 +53,7 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 			logVerbose("[PACE] MF selected\n")
 		}
 	}
-	
+
 	// Now try to read EF.CardAccess from MF
 	logVerbose("[PACE] Reading EF.CardAccess from MF...\n")
 	selectCmd := []byte{0x00, 0xA4, 0x02, 0x0C, 0x02, 0x01, 0x1C}
@@ -67,7 +70,7 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 			}
 		}
 	}
-	
+
 	// Step 0b: Probe contexts and try MSE:Set AT for PACE.
 	// Order matters: try MF first (PACE is typically in MF context),
 	// then specific AIDs. Re-select MF before each attempt to reset card state.
@@ -81,6 +84,7 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 	}
 
 	var paceSuccess bool
+	var unsupportedErr error
 	for _, aidInfo := range aids {
 		logVerbose("[PACE] Trying context: %s\n", aidInfo.name)
 
@@ -128,6 +132,12 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 		for i, paceInfo := range paceInfos {
 			logVerbose("[PACE] Trying PACEInfo %d: OID=%X, ParamID=%d\n", i+1, paceInfo.oidDER, paceInfo.paramID)
 
+			selected := ProtocolOID(oidBytesToString(paceInfo.oidDER))
+			if err := ValidateProtocol(selected); err != nil {
+				unsupportedErr = err
+				continue
+			}
+			ctx.Protocol = selected
 			ctx.CardAccessOID = paceInfo.oidDER
 			ctx.ParameterID = int(paceInfo.paramID)
 
@@ -169,6 +179,9 @@ func PerformPACE(card CardInterface, secret *PACESecret, protocol ProtocolOID, p
 	}
 
 	if !paceSuccess {
+		if unsupportedErr != nil {
+			return nil, unsupportedErr
+		}
 		return nil, fmt.Errorf("all contexts and PACEInfos failed - card may require vendor-specific initialization")
 	}
 
@@ -291,27 +304,27 @@ func selectApplication(card CardInterface, aid []byte) error {
 	// Use P2=00 for plain SELECT (not P2=0C which is for file selection)
 	cmd := []byte{0x00, 0xA4, 0x04, 0x00, byte(len(aid))}
 	cmd = append(cmd, aid...)
-	
+
 	resp, err := card.Transmit(cmd)
 	if err != nil {
 		return fmt.Errorf("SELECT AID transmission failed: %w", err)
 	}
-	
+
 	if len(resp) < 2 {
 		return fmt.Errorf("SELECT AID response too short")
 	}
-	
+
 	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
 	if sw != 0x9000 {
 		return fmt.Errorf("SELECT AID failed: SW=%04X", sw)
 	}
-	
+
 	// Log FCI (File Control Information) if present
 	if len(resp) > 2 {
 		fci := resp[:len(resp)-2]
 		logVerbose("[PACE] FCI from SELECT AID: %d bytes: %X\n", len(fci), fci)
 	}
-	
+
 	return nil
 }
 
@@ -325,92 +338,95 @@ type paceInfo struct {
 // parseCardAccessPACEInfos parses EF.CardAccess and extracts all PACEInfo structures
 func parseCardAccessPACEInfos(cardAccess []byte) []paceInfo {
 	var infos []paceInfo
-	
+
 	// Format: 31 <len> 30 <len> 06 <oidlen> <oid> 02 01 <pwtype> 02 01 <paramid>
 	if len(cardAccess) < 22 || cardAccess[0] != 0x31 {
 		return infos
 	}
-	
+
 	// For now, parse single PACEInfo (most cards have one)
 	// TODO: Support multiple PACEInfos in SET
 	if cardAccess[2] != 0x30 || cardAccess[4] != 0x06 {
 		return infos
 	}
-	
+
 	oidLen := int(cardAccess[5])
 	if len(cardAccess) < 6+oidLen+6 {
 		return infos
 	}
-	
+
 	actualOID := cardAccess[6 : 6+oidLen]
 	pwTypePos := 6 + oidLen
-	
+
 	if cardAccess[pwTypePos] != 0x02 || cardAccess[pwTypePos+1] != 0x01 {
 		return infos
 	}
-	
+
 	pwType := cardAccess[pwTypePos+2]
 	paramIDPos := pwTypePos + 3
-	
+
 	if cardAccess[paramIDPos] != 0x02 || cardAccess[paramIDPos+1] != 0x01 {
 		return infos
 	}
-	
+
 	paramID := cardAccess[paramIDPos+2]
-	
+
 	// For MSE:Set AT, some cards want just the OID bytes (no 06 <len> prefix)
 	// Others want the full DER encoding. We'll store just the OID bytes
 	// and let mseSetATPACE decide based on card behavior.
 	oidDER := actualOID // Just the OID bytes, no DER wrapper
-	
+
 	infos = append(infos, paceInfo{
 		oidDER:  oidDER,
 		pwType:  pwType,
 		paramID: paramID,
 	})
-	
+
 	return infos
 }
 
 // mseSetATPACE sends MSE:Set AT command with explicit OID, PWRef, and ParamID
 func mseSetATPACE(card CardInterface, oidDER []byte, pwRef byte, paramID byte) error {
+	if err := ValidateProtocol(ProtocolOID(oidBytesToString(oidDER))); err != nil {
+		return err
+	}
 	// Build MSE:Set AT data with three TLVs:
 	// Tag 80: OID (algorithm) - DER encoded
 	// Tag 83: Password Reference (optional - some AIDs derive from policy)
 	// Tag 84: Parameter ID
-	
+
 	data := []byte{0x80, byte(len(oidDER))}
 	data = append(data, oidDER...)
-	
+
 	// Include PWRef if not 0xFF (0xFF = omit tag 83)
 	if pwRef != 0xFF {
 		data = append(data, 0x83, 0x01, pwRef)
 	}
-	
+
 	data = append(data, 0x84, 0x01, paramID)
-	
+
 	logVerbose("[PACE] MSE:Set AT data: %X\n", data)
-	
+
 	// MSE:Set AT command (plain, CLA=00)
 	cmd := []byte{0x00, 0x22, 0xC1, 0xA4, byte(len(data))}
 	cmd = append(cmd, data...)
-	
+
 	logVerbose("[PACE] MSE:Set AT command: %X\n", cmd)
-	
+
 	resp, err := card.Transmit(cmd)
 	if err != nil {
 		return fmt.Errorf("MSE:Set AT transmission failed: %w", err)
 	}
-	
+
 	if len(resp) < 2 {
 		return fmt.Errorf("MSE:Set AT response too short")
 	}
-	
+
 	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
 	if sw != 0x9000 {
 		return fmt.Errorf("MSE:Set AT failed: SW=%04X", sw)
 	}
-	
+
 	return nil
 }
 
@@ -419,10 +435,13 @@ func mseSetATPACE(card CardInterface, oidDER []byte, pwRef byte, paramID byte) e
 // Command: 00 22 C1 A4 <data>
 // Data: TLV with OID and parameter ID
 func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int, ctx *PACEContext) error {
+	if err := ValidateProtocol(protocol); err != nil {
+		return err
+	}
 	// Build MSE:Set AT data
 	// Tag 80: OID
 	// Tag 84: Parameter ID (optional)
-	
+
 	var oidBytes []byte
 	if len(ctx.CardAccessOID) > 0 {
 		// Use OID from CardAccess (already DER encoded)
@@ -438,45 +457,45 @@ func mseSetAT(card CardInterface, protocol ProtocolOID, parameterID int, ctx *PA
 		}
 		logVerbose("[PACE] MSE:Set AT - OID: %v, OID bytes: %X\n", oidSlice, oidBytes)
 	}
-	
+
 	// Build MSE:Set AT data with three TLVs:
 	// Tag 80: OID (algorithm)
 	// Tag 83: Password Reference (0x03 for CAN, 0x02 as fallback)
 	// Tag 84: Parameter ID
-	
+
 	data := []byte{0x80, byte(len(oidBytes))}
 	data = append(data, oidBytes...)
-	
+
 	// Tag 83: Password Reference for CAN
 	// Try 0x02 for CAN (some Thales/CosmoX cards use 0x02 instead of 0x03)
 	data = append(data, 0x83, 0x01, 0x02)
-	
+
 	if parameterID > 0 {
 		data = append(data, 0x84, 0x01, byte(parameterID))
 	}
-	
+
 	logVerbose("[PACE] MSE:Set AT data (with PW ref 0x02): %X\n", data)
-	
+
 	// MSE:Set AT command
 	cmd := []byte{0x00, 0x22, 0xC1, 0xA4, byte(len(data))}
 	cmd = append(cmd, data...)
-	
+
 	logVerbose("[PACE] MSE:Set AT command: %X\n", cmd)
-	
+
 	resp, err := card.Transmit(cmd)
 	if err != nil {
 		return fmt.Errorf("MSE:Set AT transmission failed: %w", err)
 	}
-	
+
 	if len(resp) < 2 {
 		return fmt.Errorf("MSE:Set AT response too short")
 	}
-	
+
 	sw := uint16(resp[len(resp)-2])<<8 | uint16(resp[len(resp)-1])
 	if sw != 0x9000 {
 		return fmt.Errorf("MSE:Set AT failed: SW=%04X", sw)
 	}
-	
+
 	return nil
 }
 
@@ -782,4 +801,3 @@ func generateMappingKeypair(ctx *PACEContext) ([]byte, error) {
 
 	return nil, fmt.Errorf("no EC curve configured for mapping keypair generation")
 }
-

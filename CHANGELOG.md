@@ -5,6 +5,18 @@ All notable changes to libopenpace-go will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-10-30
+
+- Use protocol-required SHA-1 for AES-128 KDF and SHA-256 for AES-192/256.
+- Hash secret || nonce || purpose counter; truncate one digest. Reject invalid
+  digest lengths/algorithms with nil instead of expanding or silently defaulting.
+- Add 20 fixed independent KDF vectors, an OpenSSL verification script, and the
+  OpenPACE AES-128 nonce/session-key worked example.
+- Reject incomplete IM/3DES and unknown OIDs in card negotiation and exported
+  PACE steps. Remove simplified IM mapping and simulated high-level sessions.
+- Keep AES-192 working; SM and CMAC explicitly accept AES keys only.
+- Document remaining protocol scope and hardware validation limits.
+
 ## [1.1.1] - 2026-10-28
 
 ### Changed

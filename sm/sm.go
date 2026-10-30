@@ -26,14 +26,15 @@ type Context struct {
 	EncryptionKey []byte // K_enc for encrypting command data
 	MACKey        []byte // K_mac for MAC computation
 	SSC           []byte // Send Sequence Counter (block-size bytes, big-endian)
-	BlockSize     int    // Cipher block size (8 for 3DES, 16 for AES)
-	UseAES        bool   // True for AES, false for 3DES
+	BlockSize     int    // AES block size (16)
+	UseAES        bool   // Must be true; non-AES contexts are rejected
 }
 
-// NewContext creates a new Secure Messaging context.
+// NewContext creates an AES-only Secure Messaging context.
+// A 24-byte key means AES-192, never 3DES.
 //
 // Parameters:
-//   - encKey: Encryption key (16, 24, or 32 bytes for AES; 24 bytes for 3DES)
+//   - encKey: Encryption key (16, 24, or 32 bytes for AES)
 //   - macKey: MAC key (same length as encryption key)
 //   - sscInitial: Initial Send Sequence Counter (8 bytes) as defined by PACE
 //
@@ -46,21 +47,12 @@ func NewContext(encKey, macKey, sscInitial []byte) (*Context, error) {
 		return nil, fmt.Errorf("initial SSC must be 8 bytes")
 	}
 
-	var blockSize int
-	var useAES bool
-
+	const blockSize = 16
+	const useAES = true
 	switch len(encKey) {
-	case 16, 32: // AES-128, AES-256
-		blockSize = 16
-		useAES = true
-	case 24: // AES-192 or 3DES - default to AES
-		blockSize = 16
-		useAES = true
-	case 8: // Single DES (not recommended)
-		blockSize = 8
-		useAES = false
+	case 16, 24, 32:
 	default:
-		return nil, fmt.Errorf("unsupported key length: %d", len(encKey))
+		return nil, fmt.Errorf("only AES-128/192/256 secure messaging is supported")
 	}
 
 	// Store SSC as block-size bytes (left-padded with zeros).
@@ -121,6 +113,9 @@ func (ctx *Context) SetSSC(ssc []byte) error {
 //
 // Returns the wrapped APDU bytes.
 func (ctx *Context) WrapCommand(cla, ins, p1, p2 byte, data []byte, le int) ([]byte, error) {
+	if !ctx.UseAES || ctx.BlockSize != 16 {
+		return nil, fmt.Errorf("DES/3DES secure messaging is disabled")
+	}
 	ctx.IncrementSSC()
 
 	// Header with SM indicator bits set in CLA
@@ -198,6 +193,9 @@ func (ctx *Context) WrapCommand(cla, ins, p1, p2 byte, data []byte, le int) ([]b
 //
 // Reference: BSI TR-03110 Secure Messaging
 func (ctx *Context) UnwrapResponse(response []byte) ([]byte, uint16, error) {
+	if !ctx.UseAES || ctx.BlockSize != 16 {
+		return nil, 0, fmt.Errorf("DES/3DES secure messaging is disabled")
+	}
 	if len(response) < 2 {
 		return nil, 0, fmt.Errorf("response too short: %d bytes", len(response))
 	}
@@ -302,14 +300,12 @@ func (ctx *Context) UnwrapResponse(response []byte) ([]byte, uint16, error) {
 }
 
 // computeIV computes the SM encryption IV per OpenPACE update_iv:
-// IV = AES_ECB_Enc(K_enc, SSC) for AES, or 3DES equivalent.
+// IV = AES_ECB_Enc(K_enc, SSC). Non-AES contexts are rejected.
 func (ctx *Context) computeIV() ([]byte, error) {
 	if ctx.UseAES {
 		return crypto.AESEncryptECBBlock(ctx.EncryptionKey, ctx.SSC)
 	}
-	// For 3DES, IV = 3DES_Enc(K_enc, SSC_8bytes)
-	iv := make([]byte, ctx.BlockSize)
-	return iv, nil // TODO: 3DES IV computation
+	return nil, fmt.Errorf("DES/3DES secure messaging is disabled")
 }
 
 // encryptData encrypts data for DO87 using AES-CBC with IV = AES_ECB(K_enc, SSC).
@@ -326,7 +322,7 @@ func (ctx *Context) encryptData(data []byte) ([]byte, error) {
 		return crypto.AESEncryptCBCRaw(ctx.EncryptionKey, iv, padded)
 	}
 
-	return crypto.TripleDESEncryptCBC(ctx.EncryptionKey, iv, padded)
+	return nil, fmt.Errorf("DES/3DES secure messaging is disabled")
 }
 
 // decryptData decrypts data from DO87 using AES-CBC with IV = AES_ECB(K_enc, SSC).
@@ -340,7 +336,7 @@ func (ctx *Context) decryptData(encrypted []byte) ([]byte, error) {
 	if ctx.UseAES {
 		padded, err = crypto.AESDecryptCBCRaw(ctx.EncryptionKey, iv, encrypted)
 	} else {
-		padded, err = crypto.TripleDESDecryptCBC(ctx.EncryptionKey, iv, encrypted)
+		return nil, fmt.Errorf("DES/3DES secure messaging is disabled")
 	}
 	if err != nil {
 		return nil, err

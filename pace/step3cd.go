@@ -17,6 +17,9 @@ import (
 //
 // Reference: BSI TR-03110 v2.21 Section 4.4.3
 func PACE_STEP3C_derive_keys(ctx *PACEContext) error {
+	if err := ValidateProtocol(ctx.Protocol); err != nil {
+		return err
+	}
 	if len(ctx.SharedSecret) == 0 {
 		return fmt.Errorf("shared secret required for key derivation")
 	}
@@ -31,8 +34,6 @@ func PACE_STEP3C_derive_keys(ctx *PACEContext) error {
 		keySize = 24
 	case CipherSuiteAES256:
 		keySize = 32
-	case CipherSuite3DES:
-		keySize = 24
 	default:
 		return fmt.Errorf("unsupported cipher suite: %v", cipherSuite)
 	}
@@ -42,11 +43,6 @@ func PACE_STEP3C_derive_keys(ctx *PACEContext) error {
 	// Derive keys from shared secret (NOT from nonce — nonce was used for mapping)
 	encKey := kdf.KDF_Enc(ctx.SharedSecret, nil, keySize, hashAlg)
 	macKey := kdf.KDF_MAC(ctx.SharedSecret, nil, keySize, hashAlg)
-
-	if cipherSuite == CipherSuite3DES {
-		encKey = kdf.AdjustKeyParity(encKey)
-		macKey = kdf.AdjustKeyParity(macKey)
-	}
 
 	ctx.EncryptionKey = encKey
 	ctx.MACKey = macKey
@@ -70,6 +66,9 @@ func PACE_STEP3C_derive_keys(ctx *PACEContext) error {
 //
 // MAC_8 = first 8 bytes of AES-CMAC
 func PACE_STEP3D_compute_auth_token(ctx *PACEContext, isTerminal bool) ([]byte, error) {
+	if err := ValidateProtocol(ctx.Protocol); err != nil {
+		return nil, err
+	}
 	if len(ctx.MACKey) == 0 {
 		return nil, fmt.Errorf("MAC key required for authentication")
 	}
@@ -113,6 +112,9 @@ func PACE_STEP3D_compute_auth_token(ctx *PACEContext, isTerminal bool) ([]byte, 
 // Per BSI TR-03110:
 //   Terminal verifies: T_PICC == MAC_8(K_mac, encode_public_key(PK_PCD))
 func PACE_STEP3D_verify_auth_token(ctx *PACEContext, peerAuthToken []byte, isTerminal bool) error {
+	if err := ValidateProtocol(ctx.Protocol); err != nil {
+		return err
+	}
 	if len(ctx.MACKey) == 0 {
 		return fmt.Errorf("MAC key required for authentication")
 	}

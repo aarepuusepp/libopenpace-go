@@ -1,6 +1,7 @@
 package kdf
 
 import (
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/binary"
@@ -12,7 +13,8 @@ type HashAlgorithm int
 
 const (
 	HashSHA256 HashAlgorithm = iota // SHA-256
-	HashSHA512                       // SHA-512
+	HashSHA512                      // SHA-512
+	HashSHA1                        // SHA-1 (PACE AES-128 protocol requirement)
 )
 
 // KDF_PI derives a key from a password/secret using the BSI TR-03110 KDF_PI function.
@@ -22,7 +24,7 @@ const (
 //   - secret: The shared secret (e.g., CAN, PIN)
 //   - nonce: Optional nonce/salt
 //   - keyLength: Desired key length in bytes
-//   - hashAlg: Hash algorithm to use (SHA-256 or SHA-512)
+//   - hashAlg: Hash algorithm to use (SHA-1, SHA-256 or SHA-512)
 //
 // Returns the derived key.
 //
@@ -63,55 +65,31 @@ func KDF_MAC(sharedSecret, nonce []byte, keyLength int, hashAlg HashAlgorithm) [
 	return kdf(sharedSecret, nonce, keyLength, hashAlg, 2) // Counter starts at 2 for KDF_MAC
 }
 
-// kdf implements the generic KDF function as specified in BSI TR-03110.
-//
-// The KDF uses a counter mode construction:
-//   K = H(K_in || c || nonce) || H(K_in || c+1 || nonce) || ...
-//
-// where:
-//   - K_in is the input key material
-//   - c is a 4-byte counter starting at counterStart
-//   - nonce is optional additional data
-//   - H is the hash function (SHA-256 or SHA-512)
-//
-// The output is truncated to keyLength bytes.
-func kdf(keyMaterial, nonce []byte, keyLength int, hashAlg HashAlgorithm, counterStart uint32) []byte {
+// kdf derives one digest H(secret || nonce || counter), truncated to keyLength.
+// The counter is a four-byte big-endian purpose identifier, not an expansion
+// counter. Invalid algorithms or lengths return nil (the public API has no error
+// return). SHA-1 is required for the PACE AES-128 KDF, not used for signatures.
+func kdf(keyMaterial, nonce []byte, keyLength int, hashAlg HashAlgorithm, counter uint32) []byte {
 	var h hash.Hash
 	switch hashAlg {
+	case HashSHA1:
+		h = sha1.New()
 	case HashSHA256:
 		h = sha256.New()
 	case HashSHA512:
 		h = sha512.New()
 	default:
-		h = sha256.New() // Default to SHA-256
+		return nil
 	}
-	
-	result := make([]byte, 0, keyLength)
-	counter := counterStart
-	
-	// Generate key material in blocks until we have enough
-	for len(result) < keyLength {
-		h.Reset()
-		
-		// H(K_in || counter || nonce)
-		h.Write(keyMaterial)
-		
-		// Write counter as 4-byte big-endian
-		counterBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(counterBytes, counter)
-		h.Write(counterBytes)
-		
-		if len(nonce) > 0 {
-			h.Write(nonce)
-		}
-		
-		block := h.Sum(nil)
-		result = append(result, block...)
-		counter++
+	if keyLength <= 0 || keyLength > h.Size() {
+		return nil
 	}
-	
-	// Truncate to desired length
-	return result[:keyLength]
+	h.Write(keyMaterial)
+	h.Write(nonce)
+	var purpose [4]byte
+	binary.BigEndian.PutUint32(purpose[:], counter)
+	h.Write(purpose[:])
+	return h.Sum(nil)[:keyLength]
 }
 
 // AdjustKeyParity adjusts DES key parity bits.
@@ -122,7 +100,7 @@ func kdf(keyMaterial, nonce []byte, keyLength int, hashAlg HashAlgorithm, counte
 func AdjustKeyParity(key []byte) []byte {
 	adjusted := make([]byte, len(key))
 	copy(adjusted, key)
-	
+
 	for i := range adjusted {
 		// Count number of 1-bits in the upper 7 bits
 		b := adjusted[i] & 0xFE // Clear LSB
@@ -132,7 +110,7 @@ func AdjustKeyParity(key []byte) []byte {
 				ones++
 			}
 		}
-		
+
 		// Set LSB to make total number of 1-bits odd
 		if ones%2 == 0 {
 			adjusted[i] |= 0x01
@@ -140,19 +118,20 @@ func AdjustKeyParity(key []byte) []byte {
 			adjusted[i] &= 0xFE
 		}
 	}
-	
+
 	return adjusted
 }
 
-// GetHashAlgorithm returns the appropriate hash algorithm for a given key length.
-// Per BSI TR-03110 Part 3, Appendix A.2.1.2, Table A.1:
-//   - SHA-1 for 3DES and AES-128 (≤16 bytes) — we use SHA-256 as SHA-1 is not available
-//   - SHA-256 for AES-192 and AES-256 (≤32 bytes)
-//   - SHA-512 for key sizes >32 bytes
+// GetHashAlgorithm returns the digest for AES key lengths: SHA-1 for
+// AES-128 and SHA-256 for AES-192/256 (BSI TR-03110 Part 3, A.2.2).
+// SHA-512 is retained for legacy callers requesting longer digest output.
+// This helper does not select or enable a DES/3DES protocol.
 func GetHashAlgorithm(keyLength int) HashAlgorithm {
+	if keyLength <= 16 {
+		return HashSHA1
+	}
 	if keyLength <= 32 {
 		return HashSHA256
 	}
 	return HashSHA512
 }
-

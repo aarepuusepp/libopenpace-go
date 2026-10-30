@@ -18,6 +18,9 @@ import (
 //
 // Reference: BSI TR-03110 v2.21 Section 4.4.3
 func PACE_STEP3B_generate_ephemeral_key(ctx *PACEContext) ([]byte, error) {
+	if err := ValidateProtocol(ctx.Protocol); err != nil {
+		return nil, err
+	}
 	keyAgreementType := ctx.Protocol.GetKeyAgreementType()
 
 	switch keyAgreementType {
@@ -139,6 +142,9 @@ func generateEphemeralKeyDH(ctx *PACEContext) ([]byte, error) {
 //   - ctx: PACE context (must have ephemeral private key)
 //   - peerPublicKey: Peer's ephemeral public key bytes
 func PACE_STEP3B_compute_shared_secret(ctx *PACEContext, peerPublicKey []byte) error {
+	if err := ValidateProtocol(ctx.Protocol); err != nil {
+		return err
+	}
 	keyAgreementType := ctx.Protocol.GetKeyAgreementType()
 
 	switch keyAgreementType {

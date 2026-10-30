@@ -7,16 +7,15 @@
 //   - APDU wrapping (encryption + MAC)
 //   - APDU unwrapping (MAC verification + decryption)
 //   - Session state management (SSC, keys)
-//   - Support for multiple cipher suites (AES, 3DES)
+//   - AES-128/192/256 only (DES/3DES is disabled)
 //
 // Example usage:
 //
-//	wrappedAPDU, err := sm.Wrap(ctx, plainAPDU)
+//	wrappedAPDU, err := ctx.WrapCommand(0x00, 0xB0, 0x00, 0x00, nil, 256)
 //	response, err := card.Transmit(wrappedAPDU)
-//	data, sw, err := sm.Unwrap(ctx, response)
+//	data, sw, err := ctx.UnwrapResponse(response)
 //
 // References:
 //   - BSI TR-03110: Secure Messaging
 //   - ISO/IEC 7816-4: Secure messaging
 package sm
-

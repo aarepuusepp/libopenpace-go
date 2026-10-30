@@ -27,8 +27,11 @@ import (
 //
 // Reference: BSI TR-03110 v2.21 Section 4.4.1
 func PACE_STEP1_enc_nonce(ctx *PACEContext, secret *PACESecret) ([]byte, error) {
+	if err := ValidateProtocol(ctx.Protocol); err != nil {
+		return nil, err
+	}
 	cipherSuite := ctx.Protocol.GetCipherSuite()
-	
+
 	// Determine nonce size and key size based on cipher suite.
 	// Per BSI TR-03110: nonce s must be at least key_length bits,
 	// and must be a multiple of the cipher block size.
@@ -45,9 +48,6 @@ func PACE_STEP1_enc_nonce(ctx *PACEContext, secret *PACESecret) ([]byte, error) 
 	case CipherSuiteAES256:
 		nonceSize = 32
 		keySize = 32
-	case CipherSuite3DES:
-		nonceSize = 8
-		keySize = 24
 	default:
 		return nil, fmt.Errorf("unsupported cipher suite: %v", cipherSuite)
 	}
@@ -62,10 +62,6 @@ func PACE_STEP1_enc_nonce(ctx *PACEContext, secret *PACESecret) ([]byte, error) 
 	hashAlg := kdf.GetHashAlgorithm(keySize)
 	encKey := kdf.KDF_PI(secret.Value, nil, keySize, hashAlg)
 
-	if cipherSuite == CipherSuite3DES {
-		encKey = kdf.AdjustKeyParity(encKey)
-	}
-
 	var encryptedNonce []byte
 	var err error
 
@@ -74,8 +70,6 @@ func PACE_STEP1_enc_nonce(ctx *PACEContext, secret *PACESecret) ([]byte, error) 
 		// Per OpenPACE: cipher_no_pad uses AES-CBC with zero IV
 		zeroIV := make([]byte, aes.BlockSize)
 		encryptedNonce, err = crypto.AESEncryptCBCRaw(encKey, zeroIV, nonce)
-	case CipherSuite3DES:
-		encryptedNonce, err = crypto.TripleDESEncryptECB(encKey, nonce)
 	}
 
 	if err != nil {
@@ -84,4 +78,3 @@ func PACE_STEP1_enc_nonce(ctx *PACEContext, secret *PACESecret) ([]byte, error) 
 
 	return encryptedNonce, nil
 }
-

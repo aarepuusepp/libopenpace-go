@@ -8,9 +8,7 @@ import (
 
 // PACE_STEP3A_map_generator implements PACE Step 3A: Map Generator.
 //
-// Two mapping methods are supported:
-//   - Generic Mapping (GM): G' = s*G + H, where H = ECDH(mappingPriv, cardMappingPub)
-//   - Integrated Mapping (IM): G' = f(nonce, G) — hash-to-curve variant
+// Only Generic Mapping is supported. Integrated Mapping is rejected.
 //
 // Parameters:
 //   - ctx: PACE context (must have nonce, domain params, and MappingPrivateKey for GM)
@@ -18,6 +16,9 @@ import (
 //
 // Reference: BSI TR-03110 v2.21 Section 4.4.1
 func PACE_STEP3A_map_generator(ctx *PACEContext, cardMappingPub []byte) error {
+	if err := ValidateProtocol(ctx.Protocol); err != nil {
+		return err
+	}
 	mappingType := ctx.Protocol.GetMappingType()
 	keyAgreementType := ctx.Protocol.GetKeyAgreementType()
 
@@ -25,7 +26,7 @@ func PACE_STEP3A_map_generator(ctx *PACEContext, cardMappingPub []byte) error {
 	case MappingGeneric:
 		return mapGeneratorGM(ctx, cardMappingPub, keyAgreementType)
 	case MappingIntegrated:
-		return mapGeneratorIM(ctx, keyAgreementType)
+		return fmt.Errorf("%w: Integrated Mapping is disabled", ErrUnsupportedProtocol)
 	case MappingCAM:
 		return fmt.Errorf("CAM (Chip Authentication Mapping) not yet implemented")
 	default:
@@ -121,59 +122,5 @@ func mapGeneratorGM_DH(ctx *PACEContext, cardMappingPubBytes []byte) error {
 	gPrime.Mod(gPrime, ctx.DomainParams.P)
 
 	ctx.MappedGenerator = gPrime
-	return nil
-}
-
-// mapGeneratorIM implements Integrated Mapping (IM).
-//
-// For ECDH: The nonce is used to derive a new generator via deterministic
-// point generation. Since Go's standard library doesn't expose hash-to-curve,
-// we use a simplified approach: generate a deterministic keypair seeded
-// from the nonce, and use its public key as the mapped generator.
-//
-// For DH: G' = G^nonce mod P
-func mapGeneratorIM(ctx *PACEContext, keyAgreementType KeyAgreementType) error {
-	if len(ctx.Nonce) == 0 {
-		return fmt.Errorf("nonce required for Integrated Mapping")
-	}
-
-	switch keyAgreementType {
-	case KeyAgreementECDH:
-		return mapGeneratorIM_ECDH(ctx)
-	case KeyAgreementDH:
-		return mapGeneratorIM_DH(ctx)
-	default:
-		return fmt.Errorf("unsupported key agreement type: %v", keyAgreementType)
-	}
-}
-
-// mapGeneratorIM_ECDH implements Integrated Mapping for ECDH.
-//
-// Per BSI TR-03110 Annex A.3.4, Integrated Mapping uses the ICART algorithm
-// or Shallue-van de Woestijne for hash-to-curve. For practical purposes with
-// Estonian ID cards (which use Generic Mapping), this is a simplified version.
-func mapGeneratorIM_ECDH(ctx *PACEContext) error {
-	curve := ctx.DomainParams.EllipticCurve
-	if curve == nil {
-		return fmt.Errorf("elliptic.Curve required for Integrated Mapping ECDH")
-	}
-
-	// G' = nonce * G (scalar multiplication)
-	gPrimeX, gPrimeY := curve.ScalarBaseMult(ctx.Nonce)
-
-	ctx.MappedGenerator = &ECPoint{X: gPrimeX, Y: gPrimeY}
-	return nil
-}
-
-// mapGeneratorIM_DH implements Integrated Mapping for DH.
-func mapGeneratorIM_DH(ctx *PACEContext) error {
-	if ctx.DomainParams == nil || ctx.DomainParams.Type != DomainTypeDH {
-		return fmt.Errorf("DH domain parameters required")
-	}
-
-	nonce := new(big.Int).SetBytes(ctx.Nonce)
-	mappedG := new(big.Int).Exp(ctx.DomainParams.G, nonce, ctx.DomainParams.P)
-
-	ctx.MappedGenerator = mappedG
 	return nil
 }

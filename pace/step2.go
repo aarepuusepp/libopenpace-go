@@ -23,6 +23,9 @@ import (
 //
 // Reference: BSI TR-03110 v2.21 Section 4.4.2, OpenPACE pace.c
 func PACE_STEP2_dec_nonce(ctx *PACEContext, secret *PACESecret, encryptedNonce []byte) error {
+	if err := ValidateProtocol(ctx.Protocol); err != nil {
+		return err
+	}
 	cipherSuite := ctx.Protocol.GetCipherSuite()
 
 	var keySize int
@@ -33,18 +36,12 @@ func PACE_STEP2_dec_nonce(ctx *PACEContext, secret *PACESecret, encryptedNonce [
 		keySize = 24
 	case CipherSuiteAES256:
 		keySize = 32
-	case CipherSuite3DES:
-		keySize = 24
 	default:
 		return fmt.Errorf("unsupported cipher suite: %v", cipherSuite)
 	}
 
 	hashAlg := kdf.GetHashAlgorithm(keySize)
 	decKey := kdf.KDF_PI(secret.Value, nil, keySize, hashAlg)
-
-	if cipherSuite == CipherSuite3DES {
-		decKey = kdf.AdjustKeyParity(decKey)
-	}
 
 	logVerbose("[PACE] Step 2 - Derived K_pi (%d bytes): %X\n", len(decKey), decKey)
 	logVerbose("[PACE] Step 2 - Encrypted nonce (%d bytes): %X\n", len(encryptedNonce), encryptedNonce)
@@ -58,8 +55,6 @@ func PACE_STEP2_dec_nonce(ctx *PACEContext, secret *PACESecret, encryptedNonce [
 		// For multi-block nonces (e.g. 32 bytes for AES-256), CBC chaining is required.
 		zeroIV := make([]byte, aes.BlockSize)
 		nonce, err = crypto.AESDecryptCBCRaw(decKey, zeroIV, encryptedNonce)
-	case CipherSuite3DES:
-		nonce, err = crypto.TripleDESDecryptECB(decKey, encryptedNonce)
 	}
 
 	if err != nil {
@@ -71,4 +66,3 @@ func PACE_STEP2_dec_nonce(ctx *PACEContext, secret *PACESecret, encryptedNonce [
 	ctx.Nonce = nonce
 	return nil
 }
-

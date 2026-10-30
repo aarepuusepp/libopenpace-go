@@ -1,6 +1,6 @@
 # libopenpace-go
 
-**Version 1.1.1**
+**Version 1.1.2**
 
 Pure Go implementation of the PACE (Password Authenticated Connection Establishment) protocol for Estonian ID card NFC reading.
 
@@ -13,11 +13,11 @@ Based on the OpenPACE C library specification that is available at https://githu
 ## Features
 
 - **Pure Go**: No CGO dependencies, fully cross-platform
-- **PACE Protocol**: Complete implementation of BSI TR-03110 PACE protocol
+- **PACE Protocol**: Generic Mapping with AES; IM, CAM and 3DES are not enabled
 - **Secure Messaging**: APDU wrapping/unwrapping with encryption and MAC
-- **Multiple Cipher Suites**: Support for AES-128/192/256 and 3DES
+- **Multiple Cipher Suites**: Support for AES-128/192/256 only
 - **Domain Parameters**: Standardized curves (P-256, P-384, P-521, brainpool) and DH groups
-- **Well-Tested**: Comprehensive test coverage with BSI TR-03110 test vectors
+- **Well-Tested**: Unit tests and independent KDF reference vectors (see kdf/testdata)
 
 ## Requirements
 
@@ -28,10 +28,10 @@ Based on the OpenPACE C library specification that is available at https://githu
 
 ```bash
 # Latest version
-go get github.com/aarepuusepp/libopenpace-go@v2.0.0
+go get github.com/aarepuusepp/libopenpace-go@v1.1.2
 
 # Or use in go.mod
-require github.com/aarepuusepp/libopenpace-go v2.0.0
+require github.com/aarepuusepp/libopenpace-go v1.1.2
 ```
 
 ## Usage
@@ -42,13 +42,14 @@ import (
 )
 
 // Establish PACE session
-session, err := pace.EstablishPACE(card, can, cardAccess)
+secret := &pace.PACESecret{Type: pace.SecretTypeCAN, Value: []byte(can)}
+session, err := pace.PerformPACE(card, secret, pace.OID_PACE_ECDH_GM_AES256, 12)
 if err != nil {
     log.Fatal(err)
 }
 
 // Wrap APDU for secure messaging
-wrappedAPDU, err := session.WrapAPDU(plainAPDU)
+wrappedAPDU, err := session.WrapCommand(0x00, 0xB0, 0x00, 0x00, nil, 256)
 if err != nil {
     log.Fatal(err)
 }
@@ -81,25 +82,29 @@ This implementation follows:
 
 ## Development Status
 
-✅ **Production Ready** ✅
+The real card exchange uses Generic Mapping and AES secure messaging.
+Version 1.1.2 corrects the AES-128 KDF and optional nonce ordering.
+IM, 3DES and unknown protocol OIDs fail with pace.ErrUnsupportedProtocol before
+authentication. CardAccess-selected protocols and individual exported PACE steps
+are checked too. EstablishPACE is an alias for the real PerformPACE exchange.
 
-The library includes:
-- Complete PACE protocol implementation (Steps 1-4) with Generic Mapping (GM-ECDH)
-- Secure Messaging (APDU wrap/unwrap) with ISO 9797-1 Method 2 padding
-- All cryptographic primitives (AES-128/192/256, 3DES, CMAC, ECDH, DH)
-- Raw encryption functions for SM (AES-CBC-Raw, AES-ECB-Raw, AES-ECB-Block)
-- Key Derivation Functions (BSI TR-03110 compliant)
-- Brainpool curve support (P256r1, P320r1, P384r1, P512r1)
-- Verbose debug logging (opt-in via `SetVerbose`)
-- High-level API for easy integration
-- Comprehensive test coverage
-- Tested in production with Estonian ID cards (IDEMIA and Thales)
+SM NewContext and crypto.CMAC are AES-only: a 24-byte key means AES-192.
+Raw TripleDES helpers remain available as standalone primitives; they do not
+provide PACE 3DES or Retail MAC support. DH helpers exist, but the full card
+exchange currently generates EC mapping keys; do not assume DH interoperability.
+CA/TA/CVC and IM/CAM are not implemented.
+
+Validation for this patch includes fixed OpenPACE worked-example values and
+independently calculated AES-128/192/256 KDF vectors, protocol rejection tests
+and reader integration tests. It does not certify every protocol variant or
+replace a real NFC/card interoperability test. Previous contact-card reading
+and PKCS#11 decryption tests do not exercise NFC PACE.
 
 ## Version History
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history and release notes.
 
-Current stable version: **1.1.1**
+Current stable version: **1.1.2**
 
 ## License
 

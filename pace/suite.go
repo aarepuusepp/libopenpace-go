@@ -13,6 +13,9 @@ const (
 
 // SelectSuiteFromOID determines the AES suite from the PACE OID
 func SelectSuiteFromOID(oid ProtocolOID) (AESSuite, error) {
+	if err := ValidateProtocol(oid); err != nil {
+		return 0, err
+	}
 	// Check cipher suite from OID
 	switch oid {
 	case OID_PACE_ECDH_GM_AES128, OID_PACE_ECDH_IM_AES128,
@@ -47,4 +50,3 @@ func (s AESSuite) String() string {
 		return fmt.Sprintf("AES-%d", s)
 	}
 }
-

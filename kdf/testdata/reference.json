@@ -1,0 +1,182 @@
+[
+  {
+    "name": "AES-128-enc-no-nonce",
+    "operation": "enc",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "",
+    "keyLength": 16,
+    "expected": "617cd9d1ad1b855379b4e593c902ab88",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-128-enc-nonce",
+    "operation": "enc",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "a1a2a3a4a5a6a7a8",
+    "keyLength": 16,
+    "expected": "c3ef9648fb55b6d2ff8aeda681fe99ce",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-128-mac-no-nonce",
+    "operation": "mac",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "",
+    "keyLength": 16,
+    "expected": "a0c5d3abd6abacf3214089ed3194585b",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-128-mac-nonce",
+    "operation": "mac",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "a1a2a3a4a5a6a7a8",
+    "keyLength": 16,
+    "expected": "ee1e162d13e866fa0497cd3d9b9ce2b1",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-128-pi-no-nonce",
+    "operation": "pi",
+    "secret": "313233343536",
+    "nonce": "",
+    "keyLength": 16,
+    "expected": "591468cda83d65219cccb8560233600f",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-128-pi-nonce",
+    "operation": "pi",
+    "secret": "313233343536",
+    "nonce": "a1a2a3a4a5a6a7a8",
+    "keyLength": 16,
+    "expected": "957b68f6c1180b4c12ea636bd0ec8552",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-192-enc-no-nonce",
+    "operation": "enc",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "",
+    "keyLength": 24,
+    "expected": "c1f5124b1177700ea2c0db6d9b1c0cfa370aa91149fa1d94",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-192-enc-nonce",
+    "operation": "enc",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "a1a2a3a4a5a6a7a8",
+    "keyLength": 24,
+    "expected": "4be716a23e9c45663b7caa7734722b7f45c8c0e9013402f3",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-192-mac-no-nonce",
+    "operation": "mac",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "",
+    "keyLength": 24,
+    "expected": "7b8d672230dfe67bd5cac2d32f9f5c2d300879fe67df3afb",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-192-mac-nonce",
+    "operation": "mac",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "a1a2a3a4a5a6a7a8",
+    "keyLength": 24,
+    "expected": "892f0306db1790468d2f9e11177234905e5a2ea4c0e1d50e",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-192-pi-no-nonce",
+    "operation": "pi",
+    "secret": "313233343536",
+    "nonce": "",
+    "keyLength": 24,
+    "expected": "8df3278fb32026e66277357fcd6c826dbeb3de32088b2531",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-192-pi-nonce",
+    "operation": "pi",
+    "secret": "313233343536",
+    "nonce": "a1a2a3a4a5a6a7a8",
+    "keyLength": 24,
+    "expected": "2cb624f344bb6ea7640934883474ac8625356af156083aee",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-256-enc-no-nonce",
+    "operation": "enc",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "",
+    "keyLength": 32,
+    "expected": "c1f5124b1177700ea2c0db6d9b1c0cfa370aa91149fa1d94920a1040f0ccd54f",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-256-enc-nonce",
+    "operation": "enc",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "a1a2a3a4a5a6a7a8",
+    "keyLength": 32,
+    "expected": "4be716a23e9c45663b7caa7734722b7f45c8c0e9013402f3cd91a7d6be689d36",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-256-mac-no-nonce",
+    "operation": "mac",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "",
+    "keyLength": 32,
+    "expected": "7b8d672230dfe67bd5cac2d32f9f5c2d300879fe67df3afb301977dd938b46a7",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-256-mac-nonce",
+    "operation": "mac",
+    "secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "nonce": "a1a2a3a4a5a6a7a8",
+    "keyLength": 32,
+    "expected": "892f0306db1790468d2f9e11177234905e5a2ea4c0e1d50e7d7660827dd10ae2",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-256-pi-no-nonce",
+    "operation": "pi",
+    "secret": "313233343536",
+    "nonce": "",
+    "keyLength": 32,
+    "expected": "8df3278fb32026e66277357fcd6c826dbeb3de32088b2531757d753940185923",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "AES-256-pi-nonce",
+    "operation": "pi",
+    "secret": "313233343536",
+    "nonce": "a1a2a3a4a5a6a7a8",
+    "keyLength": 32,
+    "expected": "2cb624f344bb6ea7640934883474ac8625356af156083aee09cbbc3bda4158ab",
+    "source": "Independent Python hashlib; verify with OpenSSL"
+  },
+  {
+    "name": "OpenPACE-worked-example-enc",
+    "operation": "enc",
+    "secret": "6e7d077ccd367c2eaa683f1e8ec534302e2d00b6adaf8a87a6eda78740f17606",
+    "nonce": "",
+    "keyLength": 16,
+    "expected": "68406b4162100563d9c901a6154d2901",
+    "source": "OpenPACE eactest.c tc_ecdh_shared_secret_k, tc_ecdh_k_enc"
+  },
+  {
+    "name": "OpenPACE-worked-example-mac",
+    "operation": "mac",
+    "secret": "6e7d077ccd367c2eaa683f1e8ec534302e2d00b6adaf8a87a6eda78740f17606",
+    "nonce": "",
+    "keyLength": 16,
+    "expected": "73ff268784f72af833fdc9464049afc9",
+    "source": "OpenPACE eactest.c tc_ecdh_shared_secret_k, tc_ecdh_k_mac"
+  }
+]
