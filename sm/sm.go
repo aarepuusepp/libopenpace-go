@@ -102,7 +102,7 @@ func (ctx *Context) SetSSC(ssc []byte) error {
 //  1. Increment SSC
 //  2. Encrypt command data with IV = AES_ECB(K_enc, SSC) (if present)
 //  3. Build DO87 (encrypted data) and DO97 (Le)
-//  4. Compute MAC: CMAC(K_mac, SSC || padded_header || DO87 || DO97)
+//  4. Compute MAC over SSC || padded_header, adding a padded DO tail if present
 //  5. Build DO8E (8-byte truncated MAC)
 //  6. Construct protected APDU with Le'=0x00 appended
 //
@@ -144,16 +144,22 @@ func (ctx *Context) WrapCommand(cla, ins, p1, p2 byte, data []byte, le int) ([]b
 	}
 
 	// MAC input per ISO 7816-4 / BSI TR-03110:
-	//   CMAC(K_mac, ISO_pad(SSC || ISO_pad(header) || DO87 || DO97))
+	//   with DOs: CMAC(K_mac, ISO_pad(SSC || ISO_pad(header) || DO87 || DO97))
+	//   no DOs:   CMAC(K_mac, SSC || ISO_pad(header))
 	// The header is separately padded to block boundary.
-	// Then the entire concatenation is ISO-padded so CMAC sees a complete input.
+	// Only pad the final data-object block when objects exist. A case-1 APDU
+	// ends at the already padded header; padding that again changes its MAC.
+	// See OpenSC sm-iso.c sm_encrypt: final padding is conditional on asn1_len.
 	paddedHeader := crypto.ISO9797Method2Pad(header, ctx.BlockSize)
 
 	raw := make([]byte, 0, len(ctx.SSC)+len(paddedHeader)+len(dataObjects)+ctx.BlockSize)
 	raw = append(raw, ctx.SSC...)
 	raw = append(raw, paddedHeader...)
 	raw = append(raw, dataObjects...)
-	macInput := crypto.ISO9797Method2Pad(raw, ctx.BlockSize)
+	macInput := raw
+	if len(dataObjects) > 0 {
+		macInput = crypto.ISO9797Method2Pad(raw, ctx.BlockSize)
+	}
 
 	logVerbose("[SM] WrapCommand: SSC=%X header=%X DOs_len=%d\n", ctx.SSC, header, len(dataObjects))
 	logVerbose("[SM] CMAC input: %X\n", macInput)

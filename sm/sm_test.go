@@ -130,6 +130,33 @@ func TestWrapCommand_NoData(t *testing.T) {
 	}
 }
 
+// Independent OpenSSL 3 CMAC vectors. Input is SSC=1 followed by the padded
+// header 0C A4 00 0C (32 bytes total); case-1 has no DO87/DO97 or second pad.
+// openssl mac -macopt cipher:AES-128-CBC -macopt hexkey:<16 zero bytes> -in input.bin CMAC
+// Full tags: 07062A91C609103169199FDE2C3ED36C (128), DF3DD57809EDB1D06759813B1504BD19 (256).
+// OpenSC sm-iso.c sm_encrypt likewise pads the tail only when asn1_len != 0.
+func TestWrapCommandCase1IndependentCMAC(t *testing.T) {
+	for _, tc := range []struct {
+		size int
+		wire string
+	}{
+		{16, "0ca4000c0a8e0807062a91c609103100"},
+		{32, "0ca4000c0a8e08df3dd57809edb1d000"},
+	} {
+		ctx, err := NewContext(make([]byte, tc.size), make([]byte, tc.size), make([]byte, 8))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ctx.WrapCommand(0, 0xA4, 0, 0x0C, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, hexDecode(tc.wire)) {
+			t.Fatalf("AES-%d case-1: got %X, want %s", tc.size*8, got, tc.wire)
+		}
+	}
+}
+
 func TestWrapCommand_WithData(t *testing.T) {
 	encKey := make([]byte, 16)
 	macKey := make([]byte, 16)
