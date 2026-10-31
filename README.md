@@ -106,7 +106,7 @@ and PKCS#11 decryption tests do not exercise NFC PACE.
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history and release notes.
 
-Current stable version: **1.1.2**
+Current stable version: **1.1.3**
 
 ## License
 

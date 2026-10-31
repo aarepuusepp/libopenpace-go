@@ -1,3 +1,5 @@
+> Implementation background. Current protocol limits and release 1.1.3 are authoritative in [README](../README.md); old architecture sketches do not imply IM/CAM, DH-card or 3DES support.
+
 # libopenpace-go Implementation Notes
 
 ## Overview

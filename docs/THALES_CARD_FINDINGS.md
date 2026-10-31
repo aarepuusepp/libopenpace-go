@@ -1,3 +1,5 @@
+> Historical investigation/development record. Commands, versions and completion claims describe that record, not the current release. Use [current README](../README.md) for supported setup and API boundaries.
+
 # Thales Test Card NFC PACE Findings
 
 ## Card Information

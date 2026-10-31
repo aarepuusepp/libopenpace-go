@@ -1,3 +1,5 @@
+> Historical investigation/development record. Commands, versions and completion claims describe that record, not the current release. Use [current README](../README.md) for supported setup and API boundaries.
+
 # brainpoolP256r1 and AES-256 Support
 
 ## Status: ✅ IMPLEMENTED
